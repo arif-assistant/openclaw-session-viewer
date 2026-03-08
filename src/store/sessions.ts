@@ -127,6 +127,8 @@ interface SessionStore {
   setFilterQuery: (query: string) => void;
   toggleExpanded: (key: string) => void;
   getFilteredTree: () => TreeNode[];
+  /** Clear all sessions and reset state (used on disconnect). */
+  clearSessions: () => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -225,5 +227,16 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         }));
 
     return filterTree(sessionTree);
+  },
+
+  clearSessions: () => {
+    set({
+      sessions: new Map(),
+      sessionTree: [],
+      activeSessionKey: null,
+      filterQuery: '',
+      loading: false,
+      error: null,
+    });
   },
 }));
