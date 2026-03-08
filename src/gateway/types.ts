@@ -4,12 +4,12 @@ export interface JsonRpcRequest {
   type: 'req';
   method: string;
   params?: Record<string, unknown>;
-  id: number;
+  id: string;
 }
 
 export interface JsonRpcResponse {
   type: 'res';
-  id: number;
+  id: string;
   ok: boolean;
   result?: unknown;
   error?: { message: string };
