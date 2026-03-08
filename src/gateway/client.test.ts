@@ -3,8 +3,6 @@ import { GatewayClient } from './client';
 
 // ── Mock WebSocket ─────────────────────────────────────────────────
 
-type WSEventHandler = ((event: { data: string }) => void) | (() => void) | null;
-
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
 
@@ -69,19 +67,43 @@ describe('GatewayClient', () => {
     return MockWebSocket.instances[MockWebSocket.instances.length - 1];
   }
 
+  /**
+   * Helper: connect and authenticate through the full handshake.
+   * 1. ws.simulateOpen() → triggers onopen
+   * 2. Server sends connect.challenge event
+   * 3. Client sends connect request (type: "req", method: "connect")
+   * 4. Server responds with success
+   */
   function connectAndAuth(client: GatewayClient): MockWebSocket {
     client.connect();
     const ws = getLastWS();
     ws.simulateOpen();
-    // Server sends auth challenge
-    ws.simulateMessage({ type: 'auth', status: 'required' });
-    // Client should have sent auth token
-    ws.simulateMessage({ type: 'auth', status: 'ok' });
+
+    // Server sends connect.challenge event
+    ws.simulateMessage({
+      type: 'event',
+      event: 'connect.challenge',
+      payload: { nonce: 'abc', ts: 123 },
+    });
+
+    // Client should have sent a connect request
+    const connectMsg = JSON.parse(ws.sent[0]);
+    expect(connectMsg.type).toBe('req');
+    expect(connectMsg.method).toBe('connect');
+
+    // Server responds with success
+    ws.simulateMessage({
+      type: 'res',
+      id: connectMsg.id,
+      ok: true,
+      result: {},
+    });
+
     return ws;
   }
 
   describe('connect', () => {
-    it('should create a WebSocket connection and authenticate', () => {
+    it('should create a WebSocket connection and authenticate via connect protocol', () => {
       const client = new GatewayClient({
         url: 'ws://localhost:3578',
         token: 'test-token',
@@ -98,15 +120,37 @@ describe('GatewayClient', () => {
       ws.simulateOpen();
       expect(statusChanges).toContain('authenticating');
 
-      // Server sends auth challenge
-      ws.simulateMessage({ type: 'auth', status: 'required' });
+      // Server sends connect.challenge event
+      ws.simulateMessage({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: 'test-nonce', ts: 1000 },
+      });
 
-      // Client should have sent auth token
-      const authMsg = JSON.parse(ws.sent[0]);
-      expect(authMsg).toEqual({ type: 'auth', token: 'test-token' });
+      // Client should have sent a connect request
+      const connectMsg = JSON.parse(ws.sent[0]);
+      expect(connectMsg.type).toBe('req');
+      expect(connectMsg.method).toBe('connect');
+      expect(connectMsg.params.auth).toEqual({ token: 'test-token' });
+      expect(connectMsg.params.minProtocol).toBe(3);
+      expect(connectMsg.params.maxProtocol).toBe(3);
+      expect(connectMsg.params.client).toEqual({
+        id: 'session-viewer',
+        version: '0.1.0',
+        platform: 'browser',
+        mode: 'frontend',
+      });
+      expect(connectMsg.params.role).toBe('operator');
+      expect(connectMsg.params.scopes).toEqual(['operator.admin']);
+      expect(connectMsg.params.caps).toEqual([]);
 
       // Server approves
-      ws.simulateMessage({ type: 'auth', status: 'ok' });
+      ws.simulateMessage({
+        type: 'res',
+        id: connectMsg.id,
+        ok: true,
+        result: {},
+      });
       expect(client.status).toBe('connected');
       expect(statusChanges).toContain('connected');
     });
@@ -120,11 +164,23 @@ describe('GatewayClient', () => {
       client.connect();
       const ws = getLastWS();
       ws.simulateOpen();
-      ws.simulateMessage({ type: 'auth', status: 'required' });
+
+      // Server sends connect.challenge
       ws.simulateMessage({
-        type: 'auth',
-        status: 'failed',
-        message: 'Invalid token',
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: 'abc', ts: 123 },
+      });
+
+      // Get the connect request id
+      const connectMsg = JSON.parse(ws.sent[0]);
+
+      // Server rejects auth
+      ws.simulateMessage({
+        type: 'res',
+        id: connectMsg.id,
+        ok: false,
+        error: { message: 'Invalid token' },
       });
 
       expect(client.status).toBe('error');
@@ -141,17 +197,17 @@ describe('GatewayClient', () => {
 
       const promise = client.request('sessions.list', { limit: 10 });
 
-      // Find the request message
+      // Find the request message (after the connect request)
       const reqMsg = JSON.parse(ws.sent[ws.sent.length - 1]);
-      expect(reqMsg.type).toBe('request');
+      expect(reqMsg.type).toBe('req');
       expect(reqMsg.method).toBe('sessions.list');
       expect(reqMsg.params).toEqual({ limit: 10 });
 
       // Server responds
       ws.simulateMessage({
-        type: 'response',
+        type: 'res',
         id: reqMsg.id,
-        success: true,
+        ok: true,
         result: { sessions: [] },
       });
 
@@ -178,10 +234,10 @@ describe('GatewayClient', () => {
       const reqMsg = JSON.parse(ws.sent[ws.sent.length - 1]);
 
       ws.simulateMessage({
-        type: 'response',
+        type: 'res',
         id: reqMsg.id,
-        success: false,
-        error: 'Method not found',
+        ok: false,
+        error: { message: 'Method not found' },
       });
 
       await expect(promise).rejects.toThrow('Method not found');
@@ -230,6 +286,22 @@ describe('GatewayClient', () => {
 
       ws.simulateMessage({ type: 'event', event: 'test', payload: 'second', seq: 2 });
       expect(events).toHaveLength(1); // Still 1, handler was removed
+    });
+
+    it('should NOT dispatch connect.challenge to event handlers', () => {
+      const client = new GatewayClient({
+        url: 'ws://localhost:3578',
+        token: 'test',
+      });
+
+      const events: Array<{ event: string; payload: unknown }> = [];
+      client.onEvent((event, payload) => events.push({ event, payload }));
+
+      // Go through the full connect flow
+      connectAndAuth(client);
+
+      // connect.challenge should NOT appear in dispatched events
+      expect(events.filter((e) => e.event === 'connect.challenge')).toHaveLength(0);
     });
   });
 

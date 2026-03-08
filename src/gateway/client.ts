@@ -11,17 +11,18 @@ import type {
  *
  * Protocol:
  *   1. Client connects via WebSocket
- *   2. Server sends { type: "auth", status: "required" }
- *   3. Client sends { type: "auth", token: "..." }
- *   4. Server sends { type: "auth", status: "ok" } or { ..., status: "failed" }
- *   5. Client sends requests: { type: "request", method, params, id }
- *   6. Server responds: { type: "response", id, success, result/error }
- *   7. Server pushes events: { type: "event", event, payload, seq }
+ *   2. Server sends { type: "event", event: "connect.challenge", payload: { nonce, ts } }
+ *   3. Client sends { type: "req", id, method: "connect", params: { ... auth ... } }
+ *   4. Server sends { type: "res", id, ok: true, result: {...} } or { ..., ok: false, error: { message } }
+ *   5. Client sends requests: { type: "req", method, params, id }
+ *   6. Server responds: { type: "res", id, ok, result/error }
+ *   7. Server pushes events: { type: "event", event, payload }
  */
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private options: Required<GatewayClientOptions>;
   private requestId = 0;
+  private connectRequestId: number | null = null;
   private pendingRequests = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (reason: Error) => void }
@@ -87,7 +88,7 @@ export class GatewayClient {
 
       const id = ++this.requestId;
       const message: JsonRpcRequest = {
-        type: 'request',
+        type: 'req',
         method,
         params: params ?? {},
         id,
@@ -127,6 +128,7 @@ export class GatewayClient {
 
   private doConnect(): void {
     this.setStatus('connecting');
+    this.connectRequestId = null;
 
     try {
       this.ws = new WebSocket(this.options.url);
@@ -137,7 +139,7 @@ export class GatewayClient {
     }
 
     this.ws.onopen = () => {
-      // Wait for auth challenge from server
+      // Wait for connect.challenge event from server
       this.setStatus('authenticating');
     };
 
@@ -168,36 +170,64 @@ export class GatewayClient {
   }
 
   private handleMessage(msg: GatewayMessage): void {
-    if (msg.type === 'auth') {
-      if (msg.status === 'required') {
-        // Send auth token
-        this.ws?.send(
-          JSON.stringify({ type: 'auth', token: this.options.token })
-        );
-      } else if (msg.status === 'ok') {
-        this.reconnectAttempt = 0;
-        this.setStatus('connected');
-      } else if (msg.status === 'failed') {
-        this.setStatus('error', msg.message ?? 'Authentication failed');
-        this.intentionalClose = true; // Don't reconnect on auth failure
-        this.ws?.close();
-      }
-    } else if (msg.type === 'response') {
-      const pending = this.pendingRequests.get(msg.id);
-      if (pending) {
-        this.pendingRequests.delete(msg.id);
-        if (msg.success) {
-          pending.resolve(msg.result);
-        } else {
-          pending.reject(new Error(msg.error ?? 'Request failed'));
+    if (msg.type === 'event') {
+      if (msg.event === 'connect.challenge') {
+        // Send connect request with auth
+        const id = ++this.requestId;
+        this.connectRequestId = id;
+        const connectReq: JsonRpcRequest = {
+          type: 'req',
+          id,
+          method: 'connect',
+          params: {
+            minProtocol: 3,
+            maxProtocol: 3,
+            client: {
+              id: 'session-viewer',
+              version: '0.1.0',
+              platform: 'browser',
+              mode: 'frontend',
+            },
+            auth: { token: this.options.token },
+            role: 'operator',
+            scopes: ['operator.admin'],
+            caps: [],
+          },
+        };
+        this.ws?.send(JSON.stringify(connectReq));
+      } else {
+        // Dispatch non-challenge events to handlers
+        for (const handler of this.eventHandlers) {
+          try {
+            handler(msg.event, msg.payload);
+          } catch {
+            // Don't let handler errors crash the client
+          }
         }
       }
-    } else if (msg.type === 'event') {
-      for (const handler of this.eventHandlers) {
-        try {
-          handler(msg.event, msg.payload);
-        } catch {
-          // Don't let handler errors crash the client
+    } else if (msg.type === 'res') {
+      // Check if this is the connect response
+      if (this.connectRequestId !== null && msg.id === this.connectRequestId) {
+        this.connectRequestId = null;
+        if (msg.ok) {
+          this.reconnectAttempt = 0;
+          this.setStatus('connected');
+        } else {
+          const errorMsg = msg.error?.message ?? 'Authentication failed';
+          this.setStatus('error', errorMsg);
+          this.intentionalClose = true; // Don't reconnect on auth failure
+          this.ws?.close();
+        }
+      } else {
+        // Regular request response
+        const pending = this.pendingRequests.get(msg.id);
+        if (pending) {
+          this.pendingRequests.delete(msg.id);
+          if (msg.ok) {
+            pending.resolve(msg.result);
+          } else {
+            pending.reject(new Error(msg.error?.message ?? 'Request failed'));
+          }
         }
       }
     }
