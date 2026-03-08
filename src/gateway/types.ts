@@ -82,6 +82,41 @@ export interface SessionEntry {
   updatedAt: string;
 }
 
+// ── Session List API Response ────────────────────────────────────────
+
+export interface SessionListItem {
+  sessionId: string;
+  sessionKey: string;
+  sessionFile: string;
+  label?: string;
+  displayName?: string;
+  model?: string;
+  modelProvider?: string;
+  channel?: string;
+  origin?: string;
+  spawnedBy?: string;
+  spawnDepth: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  createdAt: string;
+  updatedAt: string;
+  derivedTitle?: string;
+  lastMessage?: string;
+}
+
+export interface SessionsListResponse {
+  sessions: SessionListItem[];
+}
+
+// ── Session Tree ─────────────────────────────────────────────────────
+
+export interface TreeNode {
+  session: SessionListItem;
+  children: TreeNode[];
+  expanded: boolean;
+}
+
 // ── Transcript Entry Types ───────────────────────────────────────────
 
 export interface TranscriptMessage {
