@@ -1,40 +1,75 @@
 // ── SessionNode — Custom React Flow node ─────────────────────────────
 //
-// Renders a single transcript entry as a fishbone node:
+// Renders either:
+//   A) A round node  – shows round summary, tool-call badge, toggle button
+//   B) A bone node   – small tool-call indicator when a round is expanded
+//
+// Visual encoding:
 //   - Size ∝ token count
-//   - Color encodes entry category
-//   - Shows role icon + truncated preview + token badge
-//   - Handles: left (target) + right (source)
+//   - Colour encodes round type (blue=normal, orange=tool_call, purple=subagent)
+//   - Handles: left (target) + right (source) + bottom (source, for bones)
 
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { SessionNodeData } from '@/layout/fishbone';
+import { useTranscriptStore } from '@/store/transcript';
 
-const ROLE_ICONS: Record<string, string> = {
-  user:      '👤',
-  assistant: '🤖',
-  system:    '⚙️',
-  tool:      '🔧',
-  session:   '▶️',
-  compaction: '📦',
-  model_change: '🔄',
-  branch_summary: '🌿',
-};
+// ── Bone node (small tool-call indicator) ────────────────────────────
 
-function getRoleIcon(data: SessionNodeData): string {
-  if (data.type === 'message' && data.role) {
-    return ROLE_ICONS[data.role] ?? '💬';
-  }
-  return ROLE_ICONS[data.type] ?? '📋';
+function BoneNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
+  return (
+    <div
+      style={{
+        width: data.nodeWidth,
+        height: data.nodeHeight,
+        borderColor: data.color,
+      }}
+      className={`
+        relative rounded border bg-surface-secondary px-2 py-1
+        flex items-center gap-1.5 overflow-hidden
+        cursor-pointer transition-shadow text-xs
+        ${selected ? 'shadow-lg ring-2 ring-accent' : 'hover:shadow-md'}
+      `}
+    >
+      <span className="text-[10px]">🔧</span>
+      <span className="text-[11px] text-gray-300 truncate font-mono">
+        {data.toolName}
+      </span>
+
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
+      />
+    </div>
+  );
 }
 
-function SessionNodeComponent({ data, selected }: NodeProps) {
-  const nodeData = data as unknown as SessionNodeData;
-  const { nodeWidth, nodeHeight, color, preview, totalTokens } = nodeData;
-  const icon = getRoleIcon(nodeData);
+// ── Round node (main spine node) ─────────────────────────────────────
+
+function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
+  const toggleRound = useTranscriptStore((s) => s.toggleRound);
+
+  const handleToggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      toggleRound(data.entryId);
+    },
+    [toggleRound, data.entryId]
+  );
+
+  const { nodeWidth, nodeHeight, color, preview, totalTokens, toolCallCount, expanded, hasSubagent } = data;
 
   // Opacity increases with token count (min 0.6, max 1.0)
-  const opacity = Math.min(1.0, 0.6 + (totalTokens > 0 ? Math.min(0.4, totalTokens / 10000) : 0));
+  const opacity = Math.min(
+    1.0,
+    0.6 + (totalTokens > 0 ? Math.min(0.4, totalTokens / 10000) : 0)
+  );
 
   return (
     <div
@@ -50,18 +85,46 @@ function SessionNodeComponent({ data, selected }: NodeProps) {
         cursor-pointer transition-shadow
         ${selected ? 'shadow-lg ring-2 ring-accent' : 'hover:shadow-md'}
       `}
+      title={
+        data.userPreview
+          ? `User: ${data.userPreview}\n\nAssistant: ${data.assistantPreview}`
+          : data.assistantPreview || undefined
+      }
     >
-      {/* Top: role icon + preview */}
+      {/* Top row: preview text */}
       <div className="flex items-start gap-1 min-w-0">
-        <span className="text-sm flex-shrink-0">{icon}</span>
+        <span className="text-sm flex-shrink-0">
+          {hasSubagent ? '🧬' : toolCallCount > 0 ? '🤖' : '💬'}
+        </span>
         <span className="text-[11px] text-gray-300 truncate leading-tight">
           {preview || '…'}
         </span>
       </div>
 
-      {/* Bottom: token badge */}
-      {totalTokens > 0 && (
-        <div className="flex justify-end">
+      {/* Bottom row: badges */}
+      <div className="flex items-center justify-between">
+        {/* Tool call badge + toggle */}
+        <div className="flex items-center gap-1">
+          {toolCallCount > 0 && (
+            <button
+              onClick={handleToggle}
+              className="text-[9px] px-1 py-0.5 rounded-sm font-mono flex items-center gap-0.5 hover:bg-surface-tertiary transition-colors"
+              style={{ color }}
+              title={expanded ? 'Collapse tool calls' : 'Expand tool calls'}
+            >
+              <span className="text-[8px]">{expanded ? '▼' : '▶'}</span>
+              🔧×{toolCallCount}
+            </button>
+          )}
+          {hasSubagent && (
+            <span className="text-[9px] px-1 py-0.5 rounded-sm" style={{ color: '#a855f7' }}>
+              🧬 sub
+            </span>
+          )}
+        </div>
+
+        {/* Token badge */}
+        {totalTokens > 0 && (
           <span
             className="text-[9px] px-1 py-0.5 rounded-sm font-mono"
             style={{ backgroundColor: `${color}30`, color }}
@@ -71,8 +134,8 @@ function SessionNodeComponent({ data, selected }: NodeProps) {
               : totalTokens}{' '}
             tok
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Handles */}
       <Handle
@@ -85,8 +148,27 @@ function SessionNodeComponent({ data, selected }: NodeProps) {
         position={Position.Right}
         className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
       />
+      {/* Bottom handle for bone connections */}
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom"
+        className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
+      />
     </div>
   );
+}
+
+// ── SessionNode dispatcher ───────────────────────────────────────────
+
+function SessionNodeComponent({ data, selected }: NodeProps) {
+  const nodeData = data as unknown as SessionNodeData;
+
+  if (nodeData.isBone) {
+    return <BoneNode data={nodeData} selected={!!selected} />;
+  }
+
+  return <RoundNode data={nodeData} selected={!!selected} />;
 }
 
 export const SessionNode = memo(SessionNodeComponent);
