@@ -136,7 +136,7 @@ export function SessionList() {
           </div>
         ) : (
           filteredTree.map((node) => (
-            <SessionTreeItem key={node.session.sessionKey} node={node} depth={0} />
+            <SessionTreeItem key={node.session.key} node={node} depth={0} />
           ))
         )}
       </div>

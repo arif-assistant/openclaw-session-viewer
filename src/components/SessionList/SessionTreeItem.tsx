@@ -12,7 +12,7 @@ export function SessionTreeItem({ node, depth }: SessionTreeItemProps) {
   const toggleExpanded = useSessionStore((s) => s.toggleExpanded);
 
   const { session, children, expanded } = node;
-  const isActive = activeSessionKey === session.sessionKey;
+  const isActive = activeSessionKey === session.key;
   const hasChildren = children.length > 0;
   const displayName = getSessionDisplayName(session);
   const model = shortenModel(session.model);
@@ -28,7 +28,7 @@ export function SessionTreeItem({ node, depth }: SessionTreeItemProps) {
             : 'text-gray-300 hover:bg-surface-tertiary/50'
         }`}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
-        onClick={() => selectSession(session.sessionKey)}
+        onClick={() => selectSession(session.key)}
       >
         {/* Expand/collapse toggle */}
         <button
@@ -39,7 +39,7 @@ export function SessionTreeItem({ node, depth }: SessionTreeItemProps) {
           }`}
           onClick={(e) => {
             e.stopPropagation();
-            if (hasChildren) toggleExpanded(session.sessionKey);
+            if (hasChildren) toggleExpanded(session.key);
           }}
           tabIndex={-1}
         >
@@ -82,7 +82,7 @@ export function SessionTreeItem({ node, depth }: SessionTreeItemProps) {
         <div>
           {children.map((child) => (
             <SessionTreeItem
-              key={child.session.sessionKey}
+              key={child.session.key}
               node={child}
               depth={depth + 1}
             />

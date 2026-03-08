@@ -56,9 +56,9 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
     set({ loading: true, error: null, sessionKey });
 
     try {
-      const result = await client.request<{ messages: TranscriptEntry[] }>(
-        'sessions.get',
-        { key: sessionKey }
+      const result = await client.request<{ sessionKey: string; messages: TranscriptEntry[] }>(
+        'chat.history',
+        { sessionKey }
       );
 
       const entries = result?.messages ?? [];

@@ -9,7 +9,7 @@ export function buildSessionTree(sessions: SessionListItem[]): TreeNode[] {
 
   // Create a TreeNode for each session
   for (const session of sessions) {
-    nodeMap.set(session.sessionKey, {
+    nodeMap.set(session.key, {
       session,
       children: [],
       expanded: true,
@@ -20,7 +20,7 @@ export function buildSessionTree(sessions: SessionListItem[]): TreeNode[] {
 
   // Build parent-child relationships
   for (const session of sessions) {
-    const node = nodeMap.get(session.sessionKey)!;
+    const node = nodeMap.get(session.key)!;
     if (session.spawnedBy && nodeMap.has(session.spawnedBy)) {
       nodeMap.get(session.spawnedBy)!.children.push(node);
     } else {
@@ -32,8 +32,8 @@ export function buildSessionTree(sessions: SessionListItem[]): TreeNode[] {
   const sortNodes = (nodes: TreeNode[]) => {
     nodes.sort(
       (a, b) =>
-        new Date(b.session.updatedAt).getTime() -
-        new Date(a.session.updatedAt).getTime()
+        (b.session.updatedAt || 0) -
+        (a.session.updatedAt || 0)
     );
     for (const node of nodes) {
       sortNodes(node.children);
@@ -54,10 +54,10 @@ export function filterSessions(
   const lower = query.toLowerCase();
   return sessions.filter((s) => {
     const name =
-      s.displayName || s.label || s.derivedTitle || s.sessionKey;
+      s.displayName || s.label || s.derivedTitle || s.key;
     return (
       name.toLowerCase().includes(lower) ||
-      s.sessionKey.toLowerCase().includes(lower) ||
+      s.key.toLowerCase().includes(lower) ||
       (s.model && s.model.toLowerCase().includes(lower)) ||
       (s.channel && s.channel.toLowerCase().includes(lower))
     );
@@ -67,14 +67,14 @@ export function filterSessions(
 // ── Helper: Get display name for session ─────────────────────────────
 
 export function getSessionDisplayName(session: SessionListItem): string {
-  return session.displayName || session.label || session.derivedTitle || session.sessionKey;
+  return session.displayName || session.label || session.derivedTitle || session.key;
 }
 
 // ── Helper: Format relative time ─────────────────────────────────────
 
-export function formatRelativeTime(dateStr: string): string {
+export function formatRelativeTime(dateInput: string | number): string {
   const now = Date.now();
-  const date = new Date(dateStr).getTime();
+  const date = typeof dateInput === 'number' ? dateInput : new Date(dateInput).getTime();
   const diffMs = now - date;
   const diffSec = Math.floor(diffMs / 1000);
 
@@ -154,7 +154,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const sessionsList = result.sessions ?? [];
       const sessionsMap = new Map<string, SessionListItem>();
       for (const s of sessionsList) {
-        sessionsMap.set(s.sessionKey, s);
+        sessionsMap.set(s.key, s);
       }
 
       const tree = buildSessionTree(sessionsList);
@@ -180,7 +180,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
     const toggleInTree = (nodes: TreeNode[]): TreeNode[] =>
       nodes.map((node) => {
-        if (node.session.sessionKey === key) {
+        if (node.session.key === key) {
           return { ...node, expanded: !node.expanded };
         }
         if (node.children.length > 0) {
@@ -197,14 +197,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     if (!filterQuery.trim()) return sessionTree;
 
     const filtered = filterSessions([...sessions.values()], filterQuery);
-    const filteredKeys = new Set(filtered.map((s) => s.sessionKey));
+    const filteredKeys = new Set(filtered.map((s) => s.key));
 
     // Include ancestors of matched sessions so tree structure is preserved
     const includeKeys = new Set<string>();
     for (const session of filtered) {
       let current: SessionListItem | undefined = session;
       while (current) {
-        includeKeys.add(current.sessionKey);
+        includeKeys.add(current.key);
         current = current.spawnedBy
           ? sessions.get(current.spawnedBy)
           : undefined;
@@ -213,12 +213,12 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
     const filterTree = (nodes: TreeNode[]): TreeNode[] =>
       nodes
-        .filter((node) => includeKeys.has(node.session.sessionKey))
+        .filter((node) => includeKeys.has(node.session.key))
         .map((node) => ({
           ...node,
           children: filterTree(node.children),
           // Auto-expand nodes that match filter
-          expanded: filteredKeys.has(node.session.sessionKey)
+          expanded: filteredKeys.has(node.session.key)
             ? true
             : node.expanded,
         }));
