@@ -119,9 +119,17 @@ export interface TreeNode {
 
 // ── Transcript Entry Types ───────────────────────────────────────────
 
+/** A content block within a structured message (tool_use, text, etc.). */
+export interface ContentBlock {
+  type: string;
+  text?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
 export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string | null;
+  content: string | ContentBlock[] | null;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
