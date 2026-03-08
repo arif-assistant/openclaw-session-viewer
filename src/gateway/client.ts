@@ -22,9 +22,9 @@ export class GatewayClient {
   private ws: WebSocket | null = null;
   private options: Required<GatewayClientOptions>;
   private requestId = 0;
-  private connectRequestId: number | null = null;
+  private connectRequestId: string | null = null;
   private pendingRequests = new Map<
-    number,
+    string,
     { resolve: (value: unknown) => void; reject: (reason: Error) => void }
   >();
   private eventHandlers: EventHandler[] = [];
@@ -86,7 +86,7 @@ export class GatewayClient {
         return;
       }
 
-      const id = ++this.requestId;
+      const id = String(++this.requestId);
       const message: JsonRpcRequest = {
         type: 'req',
         method,
@@ -173,7 +173,7 @@ export class GatewayClient {
     if (msg.type === 'event') {
       if (msg.event === 'connect.challenge') {
         // Send connect request with auth
-        const id = ++this.requestId;
+        const id = String(++this.requestId);
         this.connectRequestId = id;
         const connectReq: JsonRpcRequest = {
           type: 'req',
@@ -183,10 +183,10 @@ export class GatewayClient {
             minProtocol: 3,
             maxProtocol: 3,
             client: {
-              id: 'session-viewer',
+              id: 'gateway-client',
               version: '0.1.0',
-              platform: 'browser',
-              mode: 'frontend',
+              platform: 'linux',
+              mode: 'backend',
             },
             auth: { token: this.options.token },
             role: 'operator',

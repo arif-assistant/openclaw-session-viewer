@@ -135,10 +135,10 @@ describe('GatewayClient', () => {
       expect(connectMsg.params.minProtocol).toBe(3);
       expect(connectMsg.params.maxProtocol).toBe(3);
       expect(connectMsg.params.client).toEqual({
-        id: 'session-viewer',
+        id: 'gateway-client',
         version: '0.1.0',
-        platform: 'browser',
-        mode: 'frontend',
+        platform: 'linux',
+        mode: 'backend',
       });
       expect(connectMsg.params.role).toBe('operator');
       expect(connectMsg.params.scopes).toEqual(['operator.admin']);
