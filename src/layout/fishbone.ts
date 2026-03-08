@@ -45,17 +45,10 @@ function classifyEntry(entry: TranscriptEntry): EntryCategory {
     const content = entry.message.content;
     // Check for tool calls in content (array with tool_use blocks)
     if (Array.isArray(content)) {
-      const hasToolUse = content.some(
-        (block: unknown) =>
-          typeof block === 'object' &&
-          block !== null &&
-          (block as Record<string, unknown>).type === 'tool_use'
-      );
-      if (hasToolUse) return 'tool_call';
-
-      // Check for subagent spawning
+      // Check subagent first — a subagent spawn is also a tool_use,
+      // so this must come before the generic tool_use check.
       const hasSubagent = content.some(
-        (block: unknown) =>
+        (block) =>
           typeof block === 'object' &&
           block !== null &&
           (block as Record<string, unknown>).type === 'tool_use' &&
@@ -63,6 +56,14 @@ function classifyEntry(entry: TranscriptEntry): EntryCategory {
           ((block as Record<string, unknown>).name as string).includes('subagent')
       );
       if (hasSubagent) return 'subagent';
+
+      const hasToolUse = content.some(
+        (block) =>
+          typeof block === 'object' &&
+          block !== null &&
+          (block as Record<string, unknown>).type === 'tool_use'
+      );
+      if (hasToolUse) return 'tool_call';
     }
 
     // Tool role messages are tool results
@@ -84,14 +85,9 @@ function extractPreview(entry: TranscriptEntry): string {
       return content.slice(0, 80);
     }
     if (Array.isArray(content)) {
-      const textBlock = content.find(
-        (b: unknown) =>
-          typeof b === 'object' &&
-          b !== null &&
-          (b as Record<string, unknown>).type === 'text'
-      );
-      if (textBlock && typeof (textBlock as Record<string, unknown>).text === 'string') {
-        return ((textBlock as Record<string, unknown>).text as string).slice(0, 80);
+      const textBlock = content.find((b) => b.type === 'text');
+      if (textBlock?.text) {
+        return textBlock.text.slice(0, 80);
       }
     }
     return `[${entry.message.role}]`;
@@ -154,63 +150,90 @@ function buildTree(entries: TranscriptEntry[]): LayoutEntry[] {
   return roots;
 }
 
-/**
- * Flatten a tree into a linear "main spine" (following first-child path)
- * plus branches for any additional children.
- */
+// ── Spine / branch extraction ────────────────────────────────────────
+
+/** A collected branch: the first node's parent ID + the X slot where it forks. */
+interface BranchRecord {
+  /** ID of the parent node this branch forks from. */
+  parentNodeId: string;
+  /** Global X-slot of the parent node (used to position the branch). */
+  parentXSlot: number;
+  /** Linear list of entries along this branch's first-child spine. */
+  entries: LayoutEntry[];
+}
+
 interface SpineResult {
   spine: LayoutEntry[];
-  branches: Array<{ parentIndex: number; entries: LayoutEntry[] }>;
+  branches: BranchRecord[];
 }
 
 function extractSpineAndBranches(roots: LayoutEntry[]): SpineResult {
   const spine: LayoutEntry[] = [];
-  const branches: Array<{ parentIndex: number; entries: LayoutEntry[] }> = [];
+  const branches: BranchRecord[] = [];
 
   if (roots.length === 0) return { spine, branches };
 
   // Start from first root
   let current: LayoutEntry | undefined = roots[0];
 
-  // If multiple roots, treat extras as branches from index 0
+  // If multiple roots, treat extras as branches from slot 0
   for (let i = 1; i < roots.length; i++) {
-    const branchEntries = flattenBranch(roots[i]);
-    branches.push({ parentIndex: 0, entries: branchEntries });
+    collectBranch(roots[i], roots[0].id, 0, branches);
   }
 
-  let index = 0;
+  let slot = 0;
   while (current) {
-    current.index = index;
+    current.index = slot;
     current.depth = 0;
     spine.push(current);
 
     // Extra children become branches
     for (let c = 1; c < current.children.length; c++) {
-      const branchEntries = flattenBranch(current.children[c]);
-      branches.push({ parentIndex: index, entries: branchEntries });
+      collectBranch(current.children[c], current.id, slot, branches);
     }
 
     current = current.children[0]; // Follow first child
-    index++;
+    slot++;
   }
 
   return { spine, branches };
 }
 
-/** Flatten a subtree into a linear sequence (DFS first-child path). */
-function flattenBranch(root: LayoutEntry): LayoutEntry[] {
-  const result: LayoutEntry[] = [];
+/**
+ * Collect a branch (first-child spine) and recursively collect any
+ * nested sub-branches as additional top-level branches.
+ *
+ * @param root         Root of the subtree to collect
+ * @param parentNodeId ID of the node this branch forks from
+ * @param parentXSlot  Global X-slot of the parent node
+ * @param branches     Accumulated branches array (mutated)
+ */
+function collectBranch(
+  root: LayoutEntry,
+  parentNodeId: string,
+  parentXSlot: number,
+  branches: BranchRecord[]
+): void {
+  const entries: LayoutEntry[] = [];
   let current: LayoutEntry | undefined = root;
   let idx = 0;
 
   while (current) {
-    current.index = idx++;
-    result.push(current);
-    // Sub-branches of branches are flattened into the same branch for simplicity
+    current.index = idx;
+    entries.push(current);
+
+    // Any additional children become their own sub-branches.
+    // The parent is the current node; its X-slot = parentXSlot + 1 + idx.
+    const currentXSlot = parentXSlot + 1 + idx;
+    for (let c = 1; c < current.children.length; c++) {
+      collectBranch(current.children[c], current.id, currentXSlot, branches);
+    }
+
     current = current.children[0];
+    idx++;
   }
 
-  return result;
+  branches.push({ parentNodeId, parentXSlot, entries });
 }
 
 // ── Layout computation ───────────────────────────────────────────────
@@ -237,18 +260,13 @@ export function computeFishboneLayout(entries: TranscriptEntry[]): FishboneResul
   const nodes: Node<SessionNodeData>[] = [];
   const edges: Edge[] = [];
 
-  // Alternate branch direction: odd branches go up, even go down
-  let branchDirectionCounter = 0;
-
-  // ── Lay out main spine (Y = 0) ──
-  for (let i = 0; i < spine.length; i++) {
-    const entry = spine[i];
+  // ── Helper to create a node ──
+  function makeNode(entry: LayoutEntry, x: number, y: number): void {
     const { width, height } = computeNodeSize(entry.totalTokens);
-
     nodes.push({
       id: entry.id,
       type: 'sessionNode',
-      position: { x: X_OFFSET + i * X_SPACING, y: 0 },
+      position: { x, y },
       data: {
         entryId: entry.id,
         type: entry.type,
@@ -262,19 +280,29 @@ export function computeFishboneLayout(entries: TranscriptEntry[]): FishboneResul
         timestamp: entry.timestamp,
       },
     });
+  }
 
-    // Edge to previous spine node
+  function makeEdge(sourceId: string, targetId: string): void {
+    edges.push({
+      id: `e-${sourceId}-${targetId}`,
+      source: sourceId,
+      target: targetId,
+      type: 'branchEdge',
+    });
+  }
+
+  // ── Lay out main spine (Y = 0) ──
+  for (let i = 0; i < spine.length; i++) {
+    makeNode(spine[i], X_OFFSET + i * X_SPACING, 0);
     if (i > 0) {
-      edges.push({
-        id: `e-${spine[i - 1].id}-${entry.id}`,
-        source: spine[i - 1].id,
-        target: entry.id,
-        type: 'branchEdge',
-      });
+      makeEdge(spine[i - 1].id, spine[i].id);
     }
   }
 
   // ── Lay out branches ──
+  // Alternate direction: odd branches go up (−Y), even go down (+Y)
+  let branchDirectionCounter = 0;
+
   for (const branch of branches) {
     branchDirectionCounter++;
     const direction = branchDirectionCounter % 2 === 0 ? 1 : -1;
@@ -282,46 +310,15 @@ export function computeFishboneLayout(entries: TranscriptEntry[]): FishboneResul
 
     for (let j = 0; j < branch.entries.length; j++) {
       const entry = branch.entries[j];
-      const { width, height } = computeNodeSize(entry.totalTokens);
-      const x = X_OFFSET + (branch.parentIndex + 1 + j) * X_SPACING;
-      const y = yOffset;
+      const x = X_OFFSET + (branch.parentXSlot + 1 + j) * X_SPACING;
 
-      nodes.push({
-        id: entry.id,
-        type: 'sessionNode',
-        position: { x, y },
-        data: {
-          entryId: entry.id,
-          type: entry.type,
-          category: entry.category,
-          role: entry.role ?? entry.type,
-          preview: entry.preview,
-          totalTokens: entry.totalTokens,
-          color: CATEGORY_COLORS[entry.category],
-          nodeWidth: width,
-          nodeHeight: height,
-          timestamp: entry.timestamp,
-        },
-      });
+      makeNode(entry, x, yOffset);
 
       if (j === 0) {
-        // Edge from spine parent to first branch node
-        const parentId = spine[branch.parentIndex].id;
-        edges.push({
-          id: `e-${parentId}-${entry.id}`,
-          source: parentId,
-          target: entry.id,
-          type: 'branchEdge',
-        });
+        // Edge from parent node to first branch node
+        makeEdge(branch.parentNodeId, entry.id);
       } else {
-        // Edge within the branch
-        const prevId = branch.entries[j - 1].id;
-        edges.push({
-          id: `e-${prevId}-${entry.id}`,
-          source: prevId,
-          target: entry.id,
-          type: 'branchEdge',
-        });
+        makeEdge(branch.entries[j - 1].id, entry.id);
       }
     }
   }
