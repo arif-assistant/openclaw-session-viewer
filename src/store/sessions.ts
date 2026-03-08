@@ -91,7 +91,8 @@ export function formatRelativeTime(dateInput: string | number): string {
 
 // ── Helper: Format token count ───────────────────────────────────────
 
-export function formatTokens(tokens: number): string {
+export function formatTokens(tokens: number | undefined): string {
+  if (tokens == null || Number.isNaN(tokens)) return '—';
   if (tokens < 1000) return `${tokens}`;
   if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
   return `${(tokens / 1_000_000).toFixed(1)}M`;

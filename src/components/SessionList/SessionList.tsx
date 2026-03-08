@@ -49,7 +49,7 @@ export function SessionList() {
           Sessions
           {sessions.size > 0 && (
             <span className="ml-1.5 text-gray-500 normal-case tracking-normal">
-              ({sessions.size})
+              ({filteredTree.length !== sessions.size ? `${filteredTree.length}/` : ''}{sessions.size})
             </span>
           )}
         </h2>

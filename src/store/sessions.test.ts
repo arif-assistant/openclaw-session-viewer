@@ -224,6 +224,11 @@ describe('formatTokens', () => {
     expect(formatTokens(1_000_000)).toBe('1.0M');
     expect(formatTokens(2_500_000)).toBe('2.5M');
   });
+
+  it('should return dash for undefined or NaN', () => {
+    expect(formatTokens(undefined)).toBe('—');
+    expect(formatTokens(NaN)).toBe('—');
+  });
 });
 
 // ── shortenModel ─────────────────────────────────────────────────────
