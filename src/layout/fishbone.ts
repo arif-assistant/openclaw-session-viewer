@@ -66,13 +66,28 @@ export interface SessionNodeData {
 
 // ── Preview helpers ──────────────────────────────────────────────────
 
+/**
+ * Strip common markdown syntax from text for clean display in graph nodes.
+ */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, '')         // code blocks (must be before inline code)
+    .replace(/\*\*(.*?)\*\*/g, '$1')        // bold
+    .replace(/\*(.*?)\*/g, '$1')            // italic
+    .replace(/`(.*?)`/g, '$1')              // inline code
+    .replace(/^#+\s/gm, '')                 // headers
+    .replace(/^[-*]\s/gm, '')               // list items
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1')     // links
+    .trim();
+}
+
 function extractTextPreview(entry: import('@/gateway/types').TranscriptEntry | undefined, maxLen = 200): string {
   if (!entry?.message) return '';
   const content = entry.message.content;
-  if (typeof content === 'string') return content.slice(0, maxLen);
+  if (typeof content === 'string') return stripMarkdown(content.slice(0, maxLen));
   if (Array.isArray(content)) {
     const textBlock = content.find((b: any) => b.type === 'text' && b.text);
-    if (textBlock?.text) return (textBlock.text as string).slice(0, maxLen);
+    if (textBlock?.text) return stripMarkdown((textBlock.text as string).slice(0, maxLen));
   }
   return '';
 }
