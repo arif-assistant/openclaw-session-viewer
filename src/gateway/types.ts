@@ -1,35 +1,28 @@
 // ── JSON-RPC Protocol Types ──────────────────────────────────────────
 
 export interface JsonRpcRequest {
-  type: 'auth' | 'request';
-  method?: string;
+  type: 'req';
+  method: string;
   params?: Record<string, unknown>;
-  id?: number;
-  token?: string;
+  id: number;
 }
 
 export interface JsonRpcResponse {
-  type: 'response';
+  type: 'res';
   id: number;
-  success: boolean;
+  ok: boolean;
   result?: unknown;
-  error?: string;
+  error?: { message: string };
 }
 
 export interface JsonRpcEvent {
   type: 'event';
   event: string;
   payload: unknown;
-  seq: number;
+  seq?: number;
 }
 
-export interface AuthChallenge {
-  type: 'auth';
-  status: 'required' | 'ok' | 'failed';
-  message?: string;
-}
-
-export type GatewayMessage = JsonRpcResponse | JsonRpcEvent | AuthChallenge;
+export type GatewayMessage = JsonRpcResponse | JsonRpcEvent;
 
 // ── Connection State ─────────────────────────────────────────────────
 
