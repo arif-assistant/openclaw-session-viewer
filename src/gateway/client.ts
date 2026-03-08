@@ -224,7 +224,7 @@ export class GatewayClient {
         if (pending) {
           this.pendingRequests.delete(msg.id);
           if (msg.ok) {
-            pending.resolve(msg.result);
+            pending.resolve(msg.payload);
           } else {
             pending.reject(new Error(msg.error?.message ?? 'Request failed'));
           }

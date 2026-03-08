@@ -11,7 +11,7 @@ export interface JsonRpcResponse {
   type: 'res';
   id: string;
   ok: boolean;
-  result?: unknown;
+  payload?: unknown;
   error?: { message: string };
 }
 
@@ -54,52 +54,41 @@ export interface GatewayClientOptions {
 
 export type EventHandler = (event: string, payload: unknown) => void;
 
-// ── Session Types (from sessions.list) ───────────────────────────────
-
-export interface SessionEntry {
-  sessionId: string;
-  sessionKey: string;
-  sessionFile: string;
-  label?: string;
-  displayName?: string;
-  model?: string;
-  modelProvider?: string;
-  channel?: string;
-  origin?: string;
-  spawnedBy?: string;
-  spawnDepth: number;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
 // ── Session List API Response ────────────────────────────────────────
 
 export interface SessionListItem {
+  key: string;
   sessionId: string;
-  sessionKey: string;
-  sessionFile: string;
-  label?: string;
+  kind?: string;
   displayName?: string;
   model?: string;
   modelProvider?: string;
   channel?: string;
-  origin?: string;
+  origin?: {
+    label?: string;
+    provider?: string;
+    surface?: string;
+    chatType?: string;
+    from?: string;
+    to?: string;
+  };
   spawnedBy?: string;
-  spawnDepth: number;
+  spawnDepth?: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  createdAt: string;
-  updatedAt: string;
+  updatedAt: number;
   derivedTitle?: string;
   lastMessage?: string;
+  label?: string;
+  groupChannel?: string;
+  space?: string;
+  chatType?: string;
 }
 
 export interface SessionsListResponse {
   sessions: SessionListItem[];
+  count?: number;
 }
 
 // ── Session Tree ─────────────────────────────────────────────────────

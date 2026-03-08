@@ -208,7 +208,7 @@ describe('GatewayClient', () => {
         type: 'res',
         id: reqMsg.id,
         ok: true,
-        result: { sessions: [] },
+        payload: { sessions: [] },
       });
 
       const result = await promise;

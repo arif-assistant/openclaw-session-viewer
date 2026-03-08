@@ -13,15 +13,12 @@ import type { SessionListItem } from '@/gateway/types';
 
 function makeSession(overrides: Partial<SessionListItem> = {}): SessionListItem {
   return {
-    sessionId: 'sid-' + (overrides.sessionKey ?? 'default'),
-    sessionKey: 'default',
-    sessionFile: '/path/to/session.jsonl',
-    spawnDepth: 0,
+    sessionId: 'sid-' + (overrides.key ?? 'default'),
+    key: 'default',
     inputTokens: 100,
     outputTokens: 50,
     totalTokens: 150,
-    createdAt: '2026-03-08T10:00:00Z',
-    updatedAt: '2026-03-08T10:00:00Z',
+    updatedAt: Date.now(),
     ...overrides,
   };
 }
@@ -35,89 +32,89 @@ describe('buildSessionTree', () => {
 
   it('should create root nodes for sessions without spawnedBy', () => {
     const sessions = [
-      makeSession({ sessionKey: 'a', updatedAt: '2026-03-08T11:00:00Z' }),
-      makeSession({ sessionKey: 'b', updatedAt: '2026-03-08T12:00:00Z' }),
+      makeSession({ key: 'a', updatedAt: 2000 }),
+      makeSession({ key: 'b', updatedAt: 3000 }),
     ];
 
     const tree = buildSessionTree(sessions);
     expect(tree).toHaveLength(2);
     // Sorted by updatedAt descending — b first
-    expect(tree[0].session.sessionKey).toBe('b');
-    expect(tree[1].session.sessionKey).toBe('a');
+    expect(tree[0].session.key).toBe('b');
+    expect(tree[1].session.key).toBe('a');
     expect(tree[0].children).toEqual([]);
     expect(tree[1].children).toEqual([]);
   });
 
   it('should nest children under their parent', () => {
     const sessions = [
-      makeSession({ sessionKey: 'parent', updatedAt: '2026-03-08T10:00:00Z' }),
+      makeSession({ key: 'parent', updatedAt: 1000 }),
       makeSession({
-        sessionKey: 'child-1',
+        key: 'child-1',
         spawnedBy: 'parent',
         spawnDepth: 1,
-        updatedAt: '2026-03-08T11:00:00Z',
+        updatedAt: 2000,
       }),
       makeSession({
-        sessionKey: 'child-2',
+        key: 'child-2',
         spawnedBy: 'parent',
         spawnDepth: 1,
-        updatedAt: '2026-03-08T12:00:00Z',
+        updatedAt: 3000,
       }),
     ];
 
     const tree = buildSessionTree(sessions);
     expect(tree).toHaveLength(1);
-    expect(tree[0].session.sessionKey).toBe('parent');
+    expect(tree[0].session.key).toBe('parent');
     expect(tree[0].children).toHaveLength(2);
     // Children sorted descending — child-2 first
-    expect(tree[0].children[0].session.sessionKey).toBe('child-2');
-    expect(tree[0].children[1].session.sessionKey).toBe('child-1');
+    expect(tree[0].children[0].session.key).toBe('child-2');
+    expect(tree[0].children[1].session.key).toBe('child-1');
   });
 
   it('should handle multi-level nesting', () => {
     const sessions = [
-      makeSession({ sessionKey: 'root', updatedAt: '2026-03-08T10:00:00Z' }),
+      makeSession({ key: 'root', updatedAt: 1000 }),
       makeSession({
-        sessionKey: 'sub',
+        key: 'sub',
         spawnedBy: 'root',
         spawnDepth: 1,
-        updatedAt: '2026-03-08T11:00:00Z',
+        updatedAt: 2000,
       }),
       makeSession({
-        sessionKey: 'sub-sub',
+        key: 'sub-sub',
         spawnedBy: 'sub',
         spawnDepth: 2,
-        updatedAt: '2026-03-08T12:00:00Z',
+        updatedAt: 3000,
       }),
     ];
 
     const tree = buildSessionTree(sessions);
     expect(tree).toHaveLength(1);
-    expect(tree[0].session.sessionKey).toBe('root');
+    expect(tree[0].session.key).toBe('root');
     expect(tree[0].children).toHaveLength(1);
-    expect(tree[0].children[0].session.sessionKey).toBe('sub');
+    expect(tree[0].children[0].session.key).toBe('sub');
     expect(tree[0].children[0].children).toHaveLength(1);
-    expect(tree[0].children[0].children[0].session.sessionKey).toBe('sub-sub');
+    expect(tree[0].children[0].children[0].session.key).toBe('sub-sub');
   });
 
   it('should treat orphaned children as roots', () => {
     // spawnedBy references a non-existent session
     const sessions = [
       makeSession({
-        sessionKey: 'orphan',
+        key: 'orphan',
         spawnedBy: 'nonexistent',
-        updatedAt: '2026-03-08T10:00:00Z',
+        updatedAt: 1000,
       }),
     ];
 
     const tree = buildSessionTree(sessions);
     expect(tree).toHaveLength(1);
-    expect(tree[0].session.sessionKey).toBe('orphan');
+    expect(tree[0].session.key).toBe('orphan');
   });
 
   it('should set expanded to true by default', () => {
     const sessions = [
-      makeSession({ sessionKey: 'a' }),
+      makeSession({ key: 'a' }),
     ];
 
     const tree = buildSessionTree(sessions);
@@ -129,9 +126,9 @@ describe('buildSessionTree', () => {
 
 describe('filterSessions', () => {
   const sessions = [
-    makeSession({ sessionKey: 'main:discord', displayName: 'Discord Chat', model: 'claude-opus-4', channel: 'discord' }),
-    makeSession({ sessionKey: 'main:telegram', label: 'Telegram Bot', model: 'gpt-4o', channel: 'telegram' }),
-    makeSession({ sessionKey: 'sub:coder', derivedTitle: 'Code Review Task', model: 'claude-opus-4' }),
+    makeSession({ key: 'main:discord', displayName: 'Discord Chat', model: 'claude-opus-4', channel: 'discord' }),
+    makeSession({ key: 'main:telegram', label: 'Telegram Bot', model: 'gpt-4o', channel: 'telegram' }),
+    makeSession({ key: 'sub:coder', derivedTitle: 'Code Review Task', model: 'claude-opus-4' }),
   ];
 
   it('should return all sessions for empty query', () => {
@@ -142,19 +139,19 @@ describe('filterSessions', () => {
   it('should filter by displayName', () => {
     const result = filterSessions(sessions, 'discord');
     expect(result).toHaveLength(1);
-    expect(result[0].sessionKey).toBe('main:discord');
+    expect(result[0].key).toBe('main:discord');
   });
 
   it('should filter by label', () => {
     const result = filterSessions(sessions, 'telegram');
     expect(result).toHaveLength(1);
-    expect(result[0].sessionKey).toBe('main:telegram');
+    expect(result[0].key).toBe('main:telegram');
   });
 
   it('should filter by sessionKey', () => {
     const result = filterSessions(sessions, 'sub:coder');
     expect(result).toHaveLength(1);
-    expect(result[0].sessionKey).toBe('sub:coder');
+    expect(result[0].key).toBe('sub:coder');
   });
 
   it('should filter by model', () => {
@@ -165,7 +162,7 @@ describe('filterSessions', () => {
   it('should filter by channel', () => {
     const result = filterSessions(sessions, 'telegram');
     expect(result).toHaveLength(1);
-    expect(result[0].sessionKey).toBe('main:telegram');
+    expect(result[0].key).toBe('main:telegram');
   });
 
   it('should be case-insensitive', () => {
@@ -181,7 +178,7 @@ describe('filterSessions', () => {
   it('should filter by derivedTitle', () => {
     const result = filterSessions(sessions, 'code review');
     expect(result).toHaveLength(1);
-    expect(result[0].sessionKey).toBe('sub:coder');
+    expect(result[0].key).toBe('sub:coder');
   });
 });
 
@@ -204,7 +201,7 @@ describe('getSessionDisplayName', () => {
   });
 
   it('should fall back to sessionKey', () => {
-    const s = makeSession({ sessionKey: 'main:discord:123' });
+    const s = makeSession({ key: 'main:discord:123' });
     expect(getSessionDisplayName(s)).toBe('main:discord:123');
   });
 });
@@ -256,27 +253,26 @@ describe('shortenModel', () => {
 
 describe('formatRelativeTime', () => {
   it('should format recent times', () => {
-    const now = new Date();
-    expect(formatRelativeTime(now.toISOString())).toBe('just now');
+    expect(formatRelativeTime(Date.now())).toBe('just now');
   });
 
   it('should format minutes', () => {
-    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-    expect(formatRelativeTime(fiveMinAgo.toISOString())).toBe('5m ago');
+    expect(formatRelativeTime(Date.now() - 5 * 60 * 1000)).toBe('5m ago');
   });
 
   it('should format hours', () => {
-    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
-    expect(formatRelativeTime(threeHoursAgo.toISOString())).toBe('3h ago');
+    expect(formatRelativeTime(Date.now() - 3 * 60 * 60 * 1000)).toBe('3h ago');
   });
 
   it('should format days', () => {
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-    expect(formatRelativeTime(twoDaysAgo.toISOString())).toBe('2d ago');
+    expect(formatRelativeTime(Date.now() - 2 * 24 * 60 * 60 * 1000)).toBe('2d ago');
   });
 
   it('should format months', () => {
-    const twoMonthsAgo = new Date(Date.now() - 65 * 24 * 60 * 60 * 1000);
-    expect(formatRelativeTime(twoMonthsAgo.toISOString())).toBe('2mo ago');
+    expect(formatRelativeTime(Date.now() - 65 * 24 * 60 * 60 * 1000)).toBe('2mo ago');
+  });
+
+  it('should handle string dates too', () => {
+    expect(formatRelativeTime(new Date().toISOString())).toBe('just now');
   });
 });
