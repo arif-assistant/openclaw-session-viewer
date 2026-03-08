@@ -161,6 +161,11 @@ function GraphCanvasInner({
       fitViewOptions={{ padding: 0.2 }}
       minZoom={0.1}
       maxZoom={2}
+      panOnDrag={true}
+      panOnScroll={false}
+      zoomOnScroll={true}
+      zoomOnDoubleClick={true}
+      selectionOnDrag={false}
       defaultEdgeOptions={{ type: 'branchEdge' }}
       proOptions={{ hideAttribution: true }}
       className="bg-surface"

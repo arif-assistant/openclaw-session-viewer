@@ -56,12 +56,33 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
     set({ loading: true, error: null, sessionKey });
 
     try {
-      const result = await client.request<{ sessionKey: string; messages: TranscriptEntry[] }>(
+      const result = await client.request<{ sessionKey: string; messages: unknown[] }>(
         'chat.history',
         { sessionKey }
       );
 
-      const entries = result?.messages ?? [];
+      const rawMessages = result?.messages ?? [];
+
+      // Transform raw gateway messages into TranscriptEntry format.
+      // chat.history returns flat messages with { role, content, timestamp, ... }
+      // but the fishbone layout expects TranscriptEntry with { id, type, message }.
+      const entries: TranscriptEntry[] = rawMessages.map((msg: any, index: number) => ({
+        id: msg.id ?? `msg-${index}`,
+        parentId: msg.parentId ?? (index > 0 ? (rawMessages[index - 1] as any).id ?? `msg-${index - 1}` : undefined),
+        type: msg.type ?? ('message' as const),
+        message: msg.message ?? {
+          role: msg.role ?? 'user',
+          content: msg.content ?? null,
+          usage: msg.usage,
+          timestamp: msg.timestamp ? new Date(msg.timestamp).toISOString() : undefined,
+        },
+        summary: msg.summary,
+        tokensBefore: msg.tokensBefore,
+        customType: msg.customType,
+        data: msg.data,
+        timestamp: msg.timestamp ? new Date(msg.timestamp).toISOString() : undefined,
+      }));
+
       set({ entries, loading: false });
       get().computeLayout();
     } catch (err) {
