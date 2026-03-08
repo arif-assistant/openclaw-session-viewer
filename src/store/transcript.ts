@@ -2,12 +2,188 @@
 //
 // Manages the currently-selected session's transcript data and
 // the computed fishbone graph layout.
+//
+// Key concept: **Rounds**.
+// Raw chat.history messages are grouped into "rounds" where each round
+// is one user→assistant interaction cycle.  Multiple tool calls within
+// a single cycle are folded into the round.
 
 import { create } from 'zustand';
 import type { Node, Edge } from '@xyflow/react';
-import type { TranscriptEntry } from '@/gateway/types';
+import type { TranscriptEntry, ContentBlock } from '@/gateway/types';
+import type { Round, ToolCallInfo, RoundType } from '@/layout/types';
 import { computeFishboneLayout, type SessionNodeData } from '@/layout/fishbone';
 import { useConnectionStore } from './connection';
+
+// ── Round grouping logic ─────────────────────────────────────────────
+
+/**
+ * Group flat transcript entries into rounds.
+ *
+ * A round starts at a `user` message and includes every subsequent
+ * assistant / tool message until the next `user` message (or end).
+ *
+ * System / compaction / session entries that appear before the first
+ * user message form a special "system" round.
+ */
+export function groupIntoRounds(entries: TranscriptEntry[]): Round[] {
+  if (entries.length === 0) return [];
+
+  const rounds: Round[] = [];
+  let currentRound: Round | null = null;
+  let roundIndex = 0;
+
+  function finishRound() {
+    if (currentRound) {
+      // Determine round type
+      currentRound.type = classifyRound(currentRound);
+      rounds.push(currentRound);
+    }
+  }
+
+  function newRound(): Round {
+    const round: Round = {
+      id: `round-${roundIndex++}`,
+      toolCalls: [],
+      subagentSpawns: [],
+      rawEntries: [],
+      totalTokens: 0,
+      type: 'normal',
+    };
+    return round;
+  }
+
+  for (const entry of entries) {
+    const role = entry.message?.role;
+
+    // Start a new round on every user message
+    if (role === 'user') {
+      finishRound();
+      currentRound = newRound();
+      currentRound.userMessage = entry;
+      currentRound.timestamp = entry.timestamp;
+      currentRound.rawEntries.push(entry);
+      currentRound.totalTokens += extractEntryTokens(entry);
+      continue;
+    }
+
+    // If no round has been started yet, create one for pre-user messages
+    if (!currentRound) {
+      currentRound = newRound();
+      // For non-user entries before the first user message (session start, etc.)
+      if (entry.timestamp) currentRound.timestamp = entry.timestamp;
+    }
+
+    currentRound.rawEntries.push(entry);
+    currentRound.totalTokens += extractEntryTokens(entry);
+
+    if (role === 'assistant' && entry.type === 'message') {
+      // Check if this assistant message has tool calls
+      const toolUseBlocks = extractToolUseBlocks(entry);
+      if (toolUseBlocks.length > 0) {
+        // This is an intermediate assistant message with tool calls
+        for (const block of toolUseBlocks) {
+          const tcInfo: ToolCallInfo = {
+            id: block.id as string | undefined,
+            name: (block.name as string) ?? 'unknown',
+            toolUseBlock: block,
+          };
+
+          // Check for subagent spawn
+          const toolName = tcInfo.name;
+          if (
+            toolName.includes('subagent') ||
+            toolName === 'sessions_spawn'
+          ) {
+            // Try to extract session key from input
+            const input = block.input as Record<string, unknown> | undefined;
+            if (input?.sessionKey) {
+              currentRound.subagentSpawns.push(input.sessionKey as string);
+            } else {
+              currentRound.subagentSpawns.push(`subagent-from-${entry.id}`);
+            }
+          }
+
+          currentRound.toolCalls.push(tcInfo);
+        }
+        // Don't set as assistantMessage yet — there may be more tool calls
+        // The LAST assistant message without tool calls (or the last one period) wins
+      } else {
+        // Pure text assistant reply — this is (likely) the final response
+        currentRound.assistantMessage = entry;
+      }
+    } else if (role === 'tool') {
+      // Match tool result to its tool_use by tool_use_id
+      const content = entry.message?.content;
+      let toolUseId: string | undefined;
+      let resultText: string | undefined;
+
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.tool_use_id) {
+            toolUseId = block.tool_use_id as string;
+            resultText = typeof block.content === 'string'
+              ? block.content
+              : block.text ?? JSON.stringify(block.content ?? block, null, 2);
+          }
+        }
+      } else if (typeof content === 'string') {
+        resultText = content;
+        const data = entry.data as Record<string, unknown> | undefined;
+        toolUseId = data?.tool_use_id as string | undefined;
+      }
+
+      if (toolUseId) {
+        const tc = currentRound.toolCalls.find((t) => t.id === toolUseId);
+        if (tc) tc.resultContent = resultText;
+      }
+    }
+    // Other entry types (compaction, model_change, etc.) are just collected
+  }
+
+  // Finish last round
+  finishRound();
+
+  // Post-process: if a round has no explicit assistantMessage but has tool calls,
+  // the last assistant entry with tool calls becomes the assistantMessage
+  for (const round of rounds) {
+    if (!round.assistantMessage) {
+      const lastAssistant = [...round.rawEntries]
+        .reverse()
+        .find((e) => e.message?.role === 'assistant');
+      if (lastAssistant) round.assistantMessage = lastAssistant;
+    }
+  }
+
+  return rounds;
+}
+
+function extractToolUseBlocks(entry: TranscriptEntry): ContentBlock[] {
+  const content = entry.message?.content;
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b) => typeof b === 'object' && b !== null && b.type === 'tool_use'
+  ) as ContentBlock[];
+}
+
+function extractEntryTokens(entry: TranscriptEntry): number {
+  if (entry.message?.usage) {
+    const u = entry.message.usage;
+    return (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
+  }
+  if (entry.type === 'compaction' && entry.tokensBefore) {
+    return entry.tokensBefore;
+  }
+  return 0;
+}
+
+function classifyRound(round: Round): RoundType {
+  if (round.subagentSpawns.length > 0) return 'subagent';
+  if (round.toolCalls.length > 0) return 'tool_call';
+  return 'normal';
+}
+
+// ── Store ────────────────────────────────────────────────────────────
 
 interface TranscriptStore {
   // ── State ──
@@ -15,12 +191,16 @@ interface TranscriptStore {
   sessionKey: string | null;
   /** Raw transcript entries for the current session. */
   entries: TranscriptEntry[];
+  /** Grouped rounds (derived from entries). */
+  rounds: Round[];
   /** React Flow nodes (computed from layout). */
   graphNodes: Node<SessionNodeData>[];
   /** React Flow edges (computed from layout). */
   graphEdges: Edge[];
-  /** Currently selected node id. */
+  /** Currently selected node id (round id or tool-call id). */
   selectedNodeId: string | null;
+  /** Set of expanded round ids (showing tool call bones). */
+  expandedRounds: Set<string>;
   /** Whether transcript is being loaded. */
   loading: boolean;
   /** Last error from loading. */
@@ -29,10 +209,12 @@ interface TranscriptStore {
   // ── Actions ──
   /** Load transcript for a session from the gateway. */
   loadTranscript: (sessionKey: string) => Promise<void>;
-  /** Recompute the fishbone layout from current entries. */
+  /** Recompute the fishbone layout from current rounds. */
   computeLayout: () => void;
   /** Set selected node. */
   selectNode: (nodeId: string | null) => void;
+  /** Toggle expanded state for a round (show/hide tool call bones). */
+  toggleRound: (roundId: string) => void;
   /** Clear the transcript (e.g. on disconnect). */
   clear: () => void;
 }
@@ -40,9 +222,11 @@ interface TranscriptStore {
 export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
   sessionKey: null,
   entries: [],
+  rounds: [],
   graphNodes: [],
   graphEdges: [],
   selectedNodeId: null,
+  expandedRounds: new Set(),
   loading: false,
   error: null,
 
@@ -53,7 +237,7 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       return;
     }
 
-    set({ loading: true, error: null, sessionKey });
+    set({ loading: true, error: null, sessionKey, expandedRounds: new Set() });
 
     try {
       const result = await client.request<{ sessionKey: string; messages: unknown[] }>(
@@ -64,8 +248,6 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       const rawMessages = result?.messages ?? [];
 
       // Transform raw gateway messages into TranscriptEntry format.
-      // chat.history returns flat messages with { role, content, timestamp, ... }
-      // but the fishbone layout expects TranscriptEntry with { id, type, message }.
       const entries: TranscriptEntry[] = rawMessages.map((msg: any, index: number) => ({
         id: msg.id ?? `msg-${index}`,
         parentId: msg.parentId ?? (index > 0 ? (rawMessages[index - 1] as any).id ?? `msg-${index - 1}` : undefined),
@@ -83,7 +265,9 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
         timestamp: msg.timestamp ? new Date(msg.timestamp).toISOString() : undefined,
       }));
 
-      set({ entries, loading: false });
+      const rounds = groupIntoRounds(entries);
+
+      set({ entries, rounds, loading: false });
       get().computeLayout();
     } catch (err) {
       set({
@@ -94,8 +278,8 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
   },
 
   computeLayout: () => {
-    const { entries } = get();
-    const { nodes, edges } = computeFishboneLayout(entries);
+    const { rounds, expandedRounds } = get();
+    const { nodes, edges } = computeFishboneLayout(rounds, expandedRounds);
     set({ graphNodes: nodes, graphEdges: edges });
   },
 
@@ -103,13 +287,27 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
     set({ selectedNodeId: nodeId });
   },
 
+  toggleRound: (roundId: string) => {
+    const { expandedRounds } = get();
+    const next = new Set(expandedRounds);
+    if (next.has(roundId)) {
+      next.delete(roundId);
+    } else {
+      next.add(roundId);
+    }
+    set({ expandedRounds: next });
+    get().computeLayout();
+  },
+
   clear: () => {
     set({
       sessionKey: null,
       entries: [],
+      rounds: [],
       graphNodes: [],
       graphEdges: [],
       selectedNodeId: null,
+      expandedRounds: new Set(),
       loading: false,
       error: null,
     });
