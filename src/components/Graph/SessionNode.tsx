@@ -3,11 +3,12 @@
 // Renders either:
 //   A) A round node  – shows round summary, tool-call badge, toggle button
 //   B) A bone node   – small tool-call indicator when a round is expanded
+//   C) A sub-agent fork node – purple fork showing sub-agent session key
 //
 // Visual encoding:
 //   - Size ∝ token count
 //   - Colour encodes round type (blue=normal, orange=tool_call, purple=subagent)
-//   - Handles: left (target) + right (source) + bottom (source, for bones)
+//   - Handles: left (target) + right (source) + bottom (source, for bones/forks)
 
 import { memo, useCallback } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
@@ -45,6 +46,96 @@ function BoneNode({ data, selected }: { data: SessionNodeData; selected: boolean
         type="source"
         position={Position.Bottom}
         className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
+      />
+    </div>
+  );
+}
+
+// ── Sub-agent fork node ──────────────────────────────────────────────
+
+function SubagentForkNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
+  const toggleSubagent = useTranscriptStore((s) => s.toggleSubagent);
+  const loadSubagentTranscript = useTranscriptStore((s) => s.loadSubagentTranscript);
+  // Issue 6 fix: subscribe only to this fork's loading/failed state
+  const sessionKey = data.subagentSessionKey;
+  const isLoading = useTranscriptStore((s) => s.loadingSubagents.has(sessionKey));
+  const isFailed = useTranscriptStore((s) => s.failedSubagents.has(sessionKey));
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      toggleSubagent(data.parentRoundId, data.subagentSessionKey);
+    },
+    [toggleSubagent, data.parentRoundId, data.subagentSessionKey]
+  );
+
+  const handleRetry = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      loadSubagentTranscript(data.subagentSessionKey);
+    },
+    [loadSubagentTranscript, data.subagentSessionKey]
+  );
+
+  return (
+    <div
+      onClick={handleClick}
+      style={{
+        width: data.nodeWidth,
+        height: data.nodeHeight,
+        borderColor: isFailed ? '#ef4444' : data.color,
+        borderStyle: 'dashed',
+      }}
+      className={`
+        relative rounded-lg border-2 bg-surface-secondary px-2 py-1
+        flex items-center gap-1.5 overflow-hidden
+        cursor-pointer transition-all
+        ${selected ? 'shadow-lg ring-2 ring-purple-400' : 'hover:shadow-md hover:bg-purple-900/10'}
+      `}
+      title={
+        isFailed
+          ? `Sub-agent: ${data.subagentSessionKey}\nFailed to load — click ↻ to retry`
+          : `Sub-agent: ${data.subagentSessionKey}\nClick to ${data.subagentExpanded ? 'collapse' : 'expand'}`
+      }
+    >
+      <span className="text-[10px]">
+        {isLoading ? '⏳' : isFailed ? '⚠️' : data.subagentExpanded ? '▼' : '▶'}
+      </span>
+      <span
+        className="text-[11px] truncate font-mono"
+        style={{ color: isFailed ? '#ef4444' : data.color }}
+      >
+        {isFailed ? 'Load failed' : data.preview}
+      </span>
+      {isFailed && (
+        <button
+          onClick={handleRetry}
+          className="text-[10px] ml-auto px-1 rounded hover:bg-red-900/20 transition-colors"
+          style={{ color: '#ef4444' }}
+          title="Retry loading"
+        >
+          ↻
+        </button>
+      )}
+
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!w-2 !h-2 !border-purple-500"
+        style={{ background: data.color }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!w-2 !h-2 !border-purple-500"
+        style={{ background: data.color }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className="!w-2 !h-2 !border-purple-500"
+        style={{ background: data.color }}
       />
     </div>
   );
@@ -148,7 +239,7 @@ function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolea
         position={Position.Right}
         className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
       />
-      {/* Bottom handle for bone connections */}
+      {/* Bottom handle for bone/fork connections */}
       <Handle
         type="source"
         position={Position.Bottom}
@@ -163,6 +254,10 @@ function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolea
 
 function SessionNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as unknown as SessionNodeData;
+
+  if (nodeData.isSubagentFork) {
+    return <SubagentForkNode data={nodeData} selected={!!selected} />;
+  }
 
   if (nodeData.isBone) {
     return <BoneNode data={nodeData} selected={!!selected} />;

@@ -183,6 +183,16 @@ function classifyRound(round: Round): RoundType {
   return 'normal';
 }
 
+// ── Cached sub-agent transcript ──────────────────────────────────────
+
+export interface SubagentTranscriptCache {
+  entries: TranscriptEntry[];
+  rounds: Round[];
+}
+
+/** Maximum number of cached sub-agent transcripts (LRU eviction). */
+const MAX_CACHED_SUBAGENTS = 20;
+
 // ── Store ────────────────────────────────────────────────────────────
 
 interface TranscriptStore {
@@ -206,6 +216,16 @@ interface TranscriptStore {
   /** Last error from loading. */
   error: string | null;
 
+  // ── Sub-agent state ──
+  /** Cached transcripts for sub-agent sessions (lazy-loaded). */
+  subagentTranscripts: Map<string, SubagentTranscriptCache>;
+  /** Set of expanded sub-agent session keys. */
+  expandedSubagents: Set<string>;
+  /** Sub-agent sessions currently being loaded. */
+  loadingSubagents: Set<string>;
+  /** Sub-agent sessions that failed to load. */
+  failedSubagents: Set<string>;
+
   // ── Actions ──
   /** Load transcript for a session from the gateway. */
   loadTranscript: (sessionKey: string) => Promise<void>;
@@ -215,6 +235,10 @@ interface TranscriptStore {
   selectNode: (nodeId: string | null) => void;
   /** Toggle expanded state for a round (show/hide tool call bones). */
   toggleRound: (roundId: string) => void;
+  /** Toggle a sub-agent fork: expand/collapse + lazy-load transcript. */
+  toggleSubagent: (roundId: string, sessionKey: string) => void;
+  /** Load a sub-agent transcript (called internally by toggleSubagent). */
+  loadSubagentTranscript: (sessionKey: string) => Promise<void>;
   /** Clear the transcript (e.g. on disconnect). */
   clear: () => void;
 }
@@ -230,6 +254,12 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
   loading: false,
   error: null,
 
+  // Sub-agent state
+  subagentTranscripts: new Map(),
+  expandedSubagents: new Set(),
+  loadingSubagents: new Set(),
+  failedSubagents: new Set(),
+
   loadTranscript: async (sessionKey: string) => {
     const client = useConnectionStore.getState().client;
     if (!client) {
@@ -237,7 +267,16 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       return;
     }
 
-    set({ loading: true, error: null, sessionKey, expandedRounds: new Set() });
+    set({
+      loading: true,
+      error: null,
+      sessionKey,
+      expandedRounds: new Set(),
+      expandedSubagents: new Set(),
+      subagentTranscripts: new Map(),
+      loadingSubagents: new Set(),
+      failedSubagents: new Set(),
+    });
 
     try {
       const result = await client.request<{ sessionKey: string; messages: unknown[] }>(
@@ -278,8 +317,22 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
   },
 
   computeLayout: () => {
-    const { rounds, expandedRounds } = get();
-    const { nodes, edges } = computeFishboneLayout(rounds, expandedRounds);
+    const { rounds, expandedRounds, subagentTranscripts, expandedSubagents } = get();
+
+    // Build a Map<sessionKey, Round[]> for expanded sub-agents
+    const subagentRounds = new Map<string, Round[]>();
+    for (const [key, cache] of subagentTranscripts) {
+      if (expandedSubagents.has(key)) {
+        subagentRounds.set(key, cache.rounds);
+      }
+    }
+
+    const { nodes, edges } = computeFishboneLayout(
+      rounds,
+      expandedRounds,
+      subagentRounds,
+      expandedSubagents,
+    );
     set({ graphNodes: nodes, graphEdges: edges });
   },
 
@@ -299,6 +352,97 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
     get().computeLayout();
   },
 
+  toggleSubagent: (roundId: string, sessionKey: string) => {
+    const { expandedSubagents, subagentTranscripts } = get();
+    const next = new Set(expandedSubagents);
+
+    if (next.has(sessionKey)) {
+      // Collapse
+      next.delete(sessionKey);
+      set({ expandedSubagents: next });
+      get().computeLayout();
+    } else {
+      // Expand
+      next.add(sessionKey);
+      set({ expandedSubagents: next });
+
+      if (subagentTranscripts.has(sessionKey)) {
+        // Already cached — just recompute layout
+        get().computeLayout();
+      } else {
+        // Lazy-load the transcript
+        get().loadSubagentTranscript(sessionKey);
+      }
+    }
+  },
+
+  loadSubagentTranscript: async (sessionKey: string) => {
+    const client = useConnectionStore.getState().client;
+    if (!client) return;
+
+    const { loadingSubagents } = get();
+    if (loadingSubagents.has(sessionKey)) return; // already loading
+
+    const nextLoading = new Set(loadingSubagents);
+    nextLoading.add(sessionKey);
+    // Clear any previous failure for this key
+    const nextFailed = new Set(get().failedSubagents);
+    nextFailed.delete(sessionKey);
+    set({ loadingSubagents: nextLoading, failedSubagents: nextFailed });
+
+    try {
+      const result = await client.request<{ sessionKey: string; messages: unknown[] }>(
+        'chat.history',
+        { sessionKey }
+      );
+
+      const rawMessages = result?.messages ?? [];
+      const entries: TranscriptEntry[] = rawMessages.map((msg: any, index: number) => ({
+        id: msg.id ?? `msg-${index}`,
+        parentId: msg.parentId ?? (index > 0 ? (rawMessages[index - 1] as any).id ?? `msg-${index - 1}` : undefined),
+        type: msg.type ?? ('message' as const),
+        message: msg.message ?? {
+          role: msg.role ?? 'user',
+          content: msg.content ?? null,
+          usage: msg.usage,
+          timestamp: msg.timestamp ? new Date(msg.timestamp).toISOString() : undefined,
+        },
+        summary: msg.summary,
+        tokensBefore: msg.tokensBefore,
+        customType: msg.customType,
+        data: msg.data,
+        timestamp: msg.timestamp ? new Date(msg.timestamp).toISOString() : undefined,
+      }));
+
+      const rounds = groupIntoRounds(entries);
+
+      const nextTranscripts = new Map(get().subagentTranscripts);
+      nextTranscripts.set(sessionKey, { entries, rounds });
+
+      // LRU eviction: if cache exceeds limit, remove oldest entries
+      if (nextTranscripts.size > MAX_CACHED_SUBAGENTS) {
+        const keys = [...nextTranscripts.keys()];
+        const toRemove = keys.slice(0, nextTranscripts.size - MAX_CACHED_SUBAGENTS);
+        for (const k of toRemove) {
+          nextTranscripts.delete(k);
+        }
+      }
+
+      const doneLoading = new Set(get().loadingSubagents);
+      doneLoading.delete(sessionKey);
+
+      set({ subagentTranscripts: nextTranscripts, loadingSubagents: doneLoading });
+      get().computeLayout();
+    } catch (err) {
+      const doneLoading = new Set(get().loadingSubagents);
+      doneLoading.delete(sessionKey);
+      const failed = new Set(get().failedSubagents);
+      failed.add(sessionKey);
+      set({ loadingSubagents: doneLoading, failedSubagents: failed });
+      console.error(`Failed to load subagent transcript for ${sessionKey}:`, err);
+    }
+  },
+
   clear: () => {
     set({
       sessionKey: null,
@@ -310,6 +454,10 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       expandedRounds: new Set(),
       loading: false,
       error: null,
+      subagentTranscripts: new Map(),
+      expandedSubagents: new Set(),
+      loadingSubagents: new Set(),
+      failedSubagents: new Set(),
     });
   },
 }));
