@@ -26,6 +26,7 @@ const Y_SUBAGENT_FORK = 60;  // px from round node to sub-agent fork node
 const Y_SUBAGENT_GRAPH = 50; // px from fork node to sub-agent sub-graph
 const SUBAGENT_X_SPACING = 180; // slightly tighter spacing for sub-graphs
 const SUBAGENT_SCALE = 0.85;    // sub-graph nodes are slightly smaller
+export const MAX_NESTING_DEPTH = 5;    // max recursion depth for sub-agent rendering
 
 // Purple shades per nesting depth (lighter = deeper)
 const SUBAGENT_COLORS = [
@@ -173,6 +174,7 @@ export interface FishboneResult {
  * @param idPrefix - Prefix for node/edge ids (for uniqueness in nested graphs)
  * @param originX - X offset for the sub-graph
  * @param originY - Y offset for the sub-graph
+ * @param visited - Set of session keys already being rendered (cycle detection)
  * @returns React Flow nodes and edges positioned in a fishbone pattern
  */
 export function computeFishboneLayout(
@@ -184,8 +186,14 @@ export function computeFishboneLayout(
   idPrefix: string = '',
   originX: number = 0,
   originY: number = 0,
+  visited: Set<string> = new Set(),
 ): FishboneResult {
   if (rounds.length === 0) {
+    return { nodes: [], edges: [] };
+  }
+
+  // Guard: stop recursion if depth exceeds limit
+  if (nestingDepth > MAX_NESTING_DEPTH) {
     return { nodes: [], edges: [] };
   }
 
@@ -207,10 +215,8 @@ export function computeFishboneLayout(
     const preview = buildRoundPreview(round, i);
     const nodeId = `${idPrefix}${round.id}`;
 
-    // Determine color: sub-agent sub-graph nodes use lighter purple
-    const nodeColor = nestingDepth > 0
-      ? subagentColor(nestingDepth - 1)
-      : ROUND_COLORS[round.type];
+    // Color: preserve round-type colour encoding at all nesting levels
+    const nodeColor = ROUND_COLORS[round.type];
 
     nodes.push({
       id: nodeId,
@@ -373,10 +379,14 @@ export function computeFishboneLayout(
         // ── Render sub-agent sub-graph if expanded ──
         if (isSubExpanded) {
           const subRounds = subagentTranscripts.get(subKey);
-          if (subRounds && subRounds.length > 0) {
+          if (subRounds && subRounds.length > 0 && !visited.has(subKey)) {
             const subGraphOriginX = x;
             const subGraphOriginY = forkY + 40 * scale + Y_SUBAGENT_GRAPH * scale;
             const subPrefix = `${forkId}-sub-`;
+
+            // Track this session key to prevent circular references
+            const nextVisited = new Set(visited);
+            nextVisited.add(subKey);
 
             const subResult = computeFishboneLayout(
               subRounds,
@@ -387,6 +397,7 @@ export function computeFishboneLayout(
               subPrefix,
               subGraphOriginX,
               subGraphOriginY,
+              nextVisited,
             );
 
             nodes.push(...subResult.nodes);

@@ -190,6 +190,9 @@ export interface SubagentTranscriptCache {
   rounds: Round[];
 }
 
+/** Maximum number of cached sub-agent transcripts (LRU eviction). */
+const MAX_CACHED_SUBAGENTS = 20;
+
 // ── Store ────────────────────────────────────────────────────────────
 
 interface TranscriptStore {
@@ -220,6 +223,8 @@ interface TranscriptStore {
   expandedSubagents: Set<string>;
   /** Sub-agent sessions currently being loaded. */
   loadingSubagents: Set<string>;
+  /** Sub-agent sessions that failed to load. */
+  failedSubagents: Set<string>;
 
   // ── Actions ──
   /** Load transcript for a session from the gateway. */
@@ -253,6 +258,7 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
   subagentTranscripts: new Map(),
   expandedSubagents: new Set(),
   loadingSubagents: new Set(),
+  failedSubagents: new Set(),
 
   loadTranscript: async (sessionKey: string) => {
     const client = useConnectionStore.getState().client;
@@ -269,6 +275,7 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       expandedSubagents: new Set(),
       subagentTranscripts: new Map(),
       loadingSubagents: new Set(),
+      failedSubagents: new Set(),
     });
 
     try {
@@ -378,7 +385,10 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
 
     const nextLoading = new Set(loadingSubagents);
     nextLoading.add(sessionKey);
-    set({ loadingSubagents: nextLoading });
+    // Clear any previous failure for this key
+    const nextFailed = new Set(get().failedSubagents);
+    nextFailed.delete(sessionKey);
+    set({ loadingSubagents: nextLoading, failedSubagents: nextFailed });
 
     try {
       const result = await client.request<{ sessionKey: string; messages: unknown[] }>(
@@ -409,6 +419,15 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       const nextTranscripts = new Map(get().subagentTranscripts);
       nextTranscripts.set(sessionKey, { entries, rounds });
 
+      // LRU eviction: if cache exceeds limit, remove oldest entries
+      if (nextTranscripts.size > MAX_CACHED_SUBAGENTS) {
+        const keys = [...nextTranscripts.keys()];
+        const toRemove = keys.slice(0, nextTranscripts.size - MAX_CACHED_SUBAGENTS);
+        for (const k of toRemove) {
+          nextTranscripts.delete(k);
+        }
+      }
+
       const doneLoading = new Set(get().loadingSubagents);
       doneLoading.delete(sessionKey);
 
@@ -417,7 +436,9 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
     } catch (err) {
       const doneLoading = new Set(get().loadingSubagents);
       doneLoading.delete(sessionKey);
-      set({ loadingSubagents: doneLoading });
+      const failed = new Set(get().failedSubagents);
+      failed.add(sessionKey);
+      set({ loadingSubagents: doneLoading, failedSubagents: failed });
       console.error(`Failed to load subagent transcript for ${sessionKey}:`, err);
     }
   },
@@ -436,6 +457,7 @@ export const useTranscriptStore = create<TranscriptStore>((set, get) => ({
       subagentTranscripts: new Map(),
       expandedSubagents: new Set(),
       loadingSubagents: new Set(),
+      failedSubagents: new Set(),
     });
   },
 }));

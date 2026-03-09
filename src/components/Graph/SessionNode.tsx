@@ -55,9 +55,11 @@ function BoneNode({ data, selected }: { data: SessionNodeData; selected: boolean
 
 function SubagentForkNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
   const toggleSubagent = useTranscriptStore((s) => s.toggleSubagent);
-  const loadingSubagents = useTranscriptStore((s) => s.loadingSubagents);
-
-  const isLoading = loadingSubagents.has(data.subagentSessionKey);
+  const loadSubagentTranscript = useTranscriptStore((s) => s.loadSubagentTranscript);
+  // Issue 6 fix: subscribe only to this fork's loading/failed state
+  const sessionKey = data.subagentSessionKey;
+  const isLoading = useTranscriptStore((s) => s.loadingSubagents.has(sessionKey));
+  const isFailed = useTranscriptStore((s) => s.failedSubagents.has(sessionKey));
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -67,13 +69,21 @@ function SubagentForkNode({ data, selected }: { data: SessionNodeData; selected:
     [toggleSubagent, data.parentRoundId, data.subagentSessionKey]
   );
 
+  const handleRetry = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      loadSubagentTranscript(data.subagentSessionKey);
+    },
+    [loadSubagentTranscript, data.subagentSessionKey]
+  );
+
   return (
     <div
       onClick={handleClick}
       style={{
         width: data.nodeWidth,
         height: data.nodeHeight,
-        borderColor: data.color,
+        borderColor: isFailed ? '#ef4444' : data.color,
         borderStyle: 'dashed',
       }}
       className={`
@@ -82,17 +92,31 @@ function SubagentForkNode({ data, selected }: { data: SessionNodeData; selected:
         cursor-pointer transition-all
         ${selected ? 'shadow-lg ring-2 ring-purple-400' : 'hover:shadow-md hover:bg-purple-900/10'}
       `}
-      title={`Sub-agent: ${data.subagentSessionKey}\nClick to ${data.subagentExpanded ? 'collapse' : 'expand'}`}
+      title={
+        isFailed
+          ? `Sub-agent: ${data.subagentSessionKey}\nFailed to load — click ↻ to retry`
+          : `Sub-agent: ${data.subagentSessionKey}\nClick to ${data.subagentExpanded ? 'collapse' : 'expand'}`
+      }
     >
       <span className="text-[10px]">
-        {isLoading ? '⏳' : data.subagentExpanded ? '▼' : '▶'}
+        {isLoading ? '⏳' : isFailed ? '⚠️' : data.subagentExpanded ? '▼' : '▶'}
       </span>
       <span
         className="text-[11px] truncate font-mono"
-        style={{ color: data.color }}
+        style={{ color: isFailed ? '#ef4444' : data.color }}
       >
-        {data.preview}
+        {isFailed ? 'Load failed' : data.preview}
       </span>
+      {isFailed && (
+        <button
+          onClick={handleRetry}
+          className="text-[10px] ml-auto px-1 rounded hover:bg-red-900/20 transition-colors"
+          style={{ color: '#ef4444' }}
+          title="Retry loading"
+        >
+          ↻
+        </button>
+      )}
 
       <Handle
         type="target"
@@ -121,7 +145,6 @@ function SubagentForkNode({ data, selected }: { data: SessionNodeData; selected:
 
 function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
   const toggleRound = useTranscriptStore((s) => s.toggleRound);
-  const toggleSubagent = useTranscriptStore((s) => s.toggleSubagent);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -129,14 +152,6 @@ function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolea
       toggleRound(data.entryId);
     },
     [toggleRound, data.entryId]
-  );
-
-  const handleSubagentToggle = useCallback(
-    (e: React.MouseEvent, sessionKey: string) => {
-      e.stopPropagation();
-      toggleSubagent(data.entryId, sessionKey);
-    },
-    [toggleSubagent, data.entryId]
   );
 
   const { nodeWidth, nodeHeight, color, preview, totalTokens, toolCallCount, expanded, hasSubagent } = data;

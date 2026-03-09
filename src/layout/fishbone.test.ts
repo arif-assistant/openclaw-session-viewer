@@ -1,7 +1,7 @@
 // ── Fishbone layout tests (Round-based) ──────────────────────────────
 
 import { describe, it, expect } from 'vitest';
-import { computeFishboneLayout } from './fishbone';
+import { computeFishboneLayout, MAX_NESTING_DEPTH } from './fishbone';
 import { computeNodeSize, BASE_SIZE, SCALE_FACTOR } from './node-sizing';
 import type { Round } from './types';
 
@@ -524,5 +524,161 @@ describe('computeFishboneLayout — sub-agent forks', () => {
 
     const subEdges = result.edges.filter((e) => e.type === 'subagentEdge');
     expect(subEdges.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Cycle detection and depth limit tests ────────────────────────────
+
+describe('computeFishboneLayout — safety guards', () => {
+  it('detects circular sub-agent references (A → B → A)', () => {
+    // Main session spawns sub-agent "sub-a"
+    const mainRounds: Round[] = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-a'],
+        toolCalls: [],
+      }),
+    ];
+
+    // sub-a spawns sub-b
+    const subARounds: Round[] = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-b'],
+        toolCalls: [],
+      }),
+    ];
+
+    // sub-b tries to spawn sub-a again (circular!)
+    const subBRounds: Round[] = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-a'],
+        toolCalls: [],
+      }),
+    ];
+
+    const transcripts = new Map<string, Round[]>();
+    transcripts.set('sub-a', subARounds);
+    transcripts.set('sub-b', subBRounds);
+
+    const expandedSubs = new Set(['sub-a', 'sub-b']);
+
+    // Should NOT stack overflow — the visited set prevents re-rendering sub-a
+    const result = computeFishboneLayout(
+      mainRounds,
+      new Set(),
+      transcripts,
+      expandedSubs,
+    );
+
+    // Main: 1 round + 1 fork(sub-a) = 2
+    // sub-a: 1 round + 1 fork(sub-b) = 2
+    // sub-b: 1 round + 1 fork(sub-a) = 2, but sub-a is visited → no sub-graph
+    // Total = 6
+    expect(result.nodes).toHaveLength(6);
+
+    // The deepest depth should be 2 (sub-b's round), not infinite
+    const maxDepth = Math.max(
+      ...result.nodes.map((n) => (n.data as Record<string, unknown>).nestingDepth as number)
+    );
+    expect(maxDepth).toBe(2);
+  });
+
+  it('stops recursion at MAX_NESTING_DEPTH', () => {
+    // Build a chain of sub-agents deeper than MAX_NESTING_DEPTH
+    const transcripts = new Map<string, Round[]>();
+    const expandedSubs = new Set<string>();
+    const depth = MAX_NESTING_DEPTH + 3;
+
+    for (let i = 0; i < depth; i++) {
+      const key = `sub-${i}`;
+      const nextKey = `sub-${i + 1}`;
+      expandedSubs.add(key);
+      transcripts.set(key, [
+        makeRound(0, {
+          type: 'subagent',
+          subagentSpawns: [nextKey],
+          toolCalls: [],
+        }),
+      ]);
+    }
+    // Final leaf
+    const lastKey = `sub-${depth}`;
+    expandedSubs.add(lastKey);
+    transcripts.set(lastKey, [makeRound(0)]);
+
+    const mainRounds: Round[] = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-0'],
+        toolCalls: [],
+      }),
+    ];
+
+    const result = computeFishboneLayout(
+      mainRounds,
+      new Set(),
+      transcripts,
+      expandedSubs,
+    );
+
+    // Should not crash. Max depth in output should be ≤ MAX_NESTING_DEPTH
+    const maxDepth = Math.max(
+      ...result.nodes.map((n) => (n.data as Record<string, unknown>).nestingDepth as number)
+    );
+    expect(maxDepth).toBeLessThanOrEqual(MAX_NESTING_DEPTH);
+  });
+
+  it('handles empty sub-agent transcript (0 rounds)', () => {
+    const rounds: Round[] = [makeSubagentRound(0)];
+
+    const transcripts = new Map<string, Round[]>();
+    transcripts.set('subagent-session-1', []); // empty!
+
+    const result = computeFishboneLayout(
+      rounds,
+      new Set(),
+      transcripts,
+      new Set(['subagent-session-1']),
+    );
+
+    // 1 round + 1 fork, but no sub-graph nodes (empty transcript)
+    expect(result.nodes).toHaveLength(2);
+  });
+
+  it('preserves round-type color coding in sub-graphs', () => {
+    const rounds: Round[] = [makeSubagentRound(0)];
+
+    // Sub-agent has both normal and tool_call rounds
+    const subRounds: Round[] = [
+      makeRound(0),
+      makeToolCallRound(1, ['exec']),
+    ];
+
+    const transcripts = new Map<string, Round[]>();
+    transcripts.set('subagent-session-1', subRounds);
+
+    const result = computeFishboneLayout(
+      rounds,
+      new Set(),
+      transcripts,
+      new Set(['subagent-session-1']),
+    );
+
+    // Find sub-graph nodes
+    const subNormal = result.nodes.find(
+      (n) => n.id.includes('-sub-') && (n.data as Record<string, unknown>).roundType === 'normal'
+    );
+    const subTool = result.nodes.find(
+      (n) => n.id.includes('-sub-') && (n.data as Record<string, unknown>).roundType === 'tool_call'
+    );
+
+    expect(subNormal).toBeDefined();
+    expect(subTool).toBeDefined();
+
+    // Colors should match their round types, not all be purple
+    expect((subNormal!.data as Record<string, unknown>).color).toBe('#3b82f6'); // blue
+    expect((subTool!.data as Record<string, unknown>).color).toBe('#f97316');   // orange
   });
 });

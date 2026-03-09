@@ -219,6 +219,7 @@ describe('useTranscriptStore — sub-agent state', () => {
     expect(cleared.subagentTranscripts.size).toBe(0);
     expect(cleared.expandedSubagents.size).toBe(0);
     expect(cleared.loadingSubagents.size).toBe(0);
+    expect(cleared.failedSubagents.size).toBe(0);
   });
 
   it('toggleSubagent reuses cached transcript', () => {
@@ -238,5 +239,22 @@ describe('useTranscriptStore — sub-agent state', () => {
     expect(state.expandedSubagents.has('cached-sub')).toBe(true);
     // Loading should not have been triggered (no client connected)
     expect(state.loadingSubagents.has('cached-sub')).toBe(false);
+  });
+
+  it('initializes failedSubagents as empty Set', () => {
+    const store = useTranscriptStore.getState();
+    expect(store.failedSubagents).toBeInstanceOf(Set);
+    expect(store.failedSubagents.size).toBe(0);
+  });
+
+  it('clear resets failedSubagents', () => {
+    // Simulate a failed state
+    useTranscriptStore.setState({
+      failedSubagents: new Set(['sub-fail-1']),
+    });
+    expect(useTranscriptStore.getState().failedSubagents.size).toBe(1);
+
+    useTranscriptStore.getState().clear();
+    expect(useTranscriptStore.getState().failedSubagents.size).toBe(0);
   });
 });
