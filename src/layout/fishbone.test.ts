@@ -154,7 +154,8 @@ describe('computeFishboneLayout (Round-based)', () => {
 
     const result = computeFishboneLayout(rounds);
 
-    expect(result.nodes).toHaveLength(3);
+    // 3 round nodes + 1 sub-agent fork node = 4
+    expect(result.nodes).toHaveLength(4);
 
     const normalNode = result.nodes.find((n) => n.id === 'round-0')!;
     expect((normalNode.data as Record<string, unknown>).roundType).toBe('normal');
@@ -165,6 +166,12 @@ describe('computeFishboneLayout (Round-based)', () => {
     const subNode = result.nodes.find((n) => n.id === 'round-2')!;
     expect((subNode.data as Record<string, unknown>).roundType).toBe('subagent');
     expect((subNode.data as Record<string, unknown>).hasSubagent).toBe(true);
+
+    // Verify the fork node
+    const forkNode = result.nodes.find((n) => n.id === 'round-2-fork-0')!;
+    expect(forkNode).toBeDefined();
+    expect((forkNode.data as Record<string, unknown>).isSubagentFork).toBe(true);
+    expect((forkNode.data as Record<string, unknown>).subagentSessionKey).toBe('subagent-session-1');
   });
 
   it('uses correct colours for round types', () => {
@@ -293,5 +300,229 @@ describe('computeNodeSize', () => {
 
     expect(width).toBeCloseTo(expectedSize, 5);
     expect(height).toBeCloseTo(expectedSize * 0.75, 5);
+  });
+});
+
+// ── Sub-agent fork layout tests ──────────────────────────────────────
+
+describe('computeFishboneLayout — sub-agent forks', () => {
+  it('renders a fork node for each subagent spawn (collapsed)', () => {
+    const rounds = [
+      makeSubagentRound(0),
+    ];
+    const result = computeFishboneLayout(rounds);
+
+    // 1 round node + 1 fork node
+    expect(result.nodes).toHaveLength(2);
+
+    const forkNode = result.nodes.find((n) => n.id === 'round-0-fork-0')!;
+    expect(forkNode).toBeDefined();
+
+    const data = forkNode.data as Record<string, unknown>;
+    expect(data.isSubagentFork).toBe(true);
+    expect(data.subagentSessionKey).toBe('subagent-session-1');
+    expect(data.subagentExpanded).toBe(false);
+    expect(data.parentRoundId).toBe('round-0');
+
+    // Fork should have an edge from the round
+    const forkEdge = result.edges.find((e) => e.target === 'round-0-fork-0');
+    expect(forkEdge).toBeDefined();
+    expect(forkEdge!.source).toBe('round-0');
+    expect(forkEdge!.type).toBe('subagentEdge');
+  });
+
+  it('renders multiple fork nodes for multiple subagent spawns', () => {
+    const rounds = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-a', 'sub-b', 'sub-c'],
+        toolCalls: [],
+      }),
+    ];
+    const result = computeFishboneLayout(rounds);
+
+    // 1 round + 3 forks
+    expect(result.nodes).toHaveLength(4);
+
+    expect(result.nodes.find((n) => n.id === 'round-0-fork-0')).toBeDefined();
+    expect(result.nodes.find((n) => n.id === 'round-0-fork-1')).toBeDefined();
+    expect(result.nodes.find((n) => n.id === 'round-0-fork-2')).toBeDefined();
+
+    // Each fork has a subagentEdge from round-0
+    const forkEdges = result.edges.filter((e) => e.type === 'subagentEdge');
+    expect(forkEdges).toHaveLength(3);
+    for (const edge of forkEdges) {
+      expect(edge.source).toBe('round-0');
+    }
+  });
+
+  it('renders sub-agent sub-graph when fork is expanded', () => {
+    const rounds = [
+      makeSubagentRound(0),
+    ];
+
+    // Sub-agent has its own rounds
+    const subRounds = [
+      makeRound(0, { totalTokens: 100 }),
+      makeToolCallRound(1, ['exec']),
+    ];
+
+    const subagentTranscripts = new Map<string, Round[]>();
+    subagentTranscripts.set('subagent-session-1', subRounds);
+
+    const expandedSubagents = new Set(['subagent-session-1']);
+
+    const result = computeFishboneLayout(
+      rounds,
+      new Set(),
+      subagentTranscripts,
+      expandedSubagents,
+    );
+
+    // 1 main round + 1 fork + 2 sub-agent round nodes = 4
+    expect(result.nodes).toHaveLength(4);
+
+    // Verify fork node is expanded
+    const forkNode = result.nodes.find((n) => n.id === 'round-0-fork-0')!;
+    expect((forkNode.data as Record<string, unknown>).subagentExpanded).toBe(true);
+
+    // Sub-graph nodes should have prefixed ids
+    const subNodes = result.nodes.filter((n) => n.id.startsWith('round-0-fork-0-sub-'));
+    expect(subNodes).toHaveLength(2);
+
+    // Sub-graph nodes should be below the fork node
+    for (const subNode of subNodes) {
+      expect(subNode.position.y).toBeGreaterThan(forkNode.position.y);
+    }
+
+    // Edge from fork to first sub-graph round
+    const forkToSubEdge = result.edges.find(
+      (e) => e.source === 'round-0-fork-0' && e.target.startsWith('round-0-fork-0-sub-')
+    );
+    expect(forkToSubEdge).toBeDefined();
+    expect(forkToSubEdge!.type).toBe('subagentEdge');
+  });
+
+  it('sub-graph nodes are at deeper nesting depth', () => {
+    const rounds = [makeSubagentRound(0)];
+    const subRounds = [makeRound(0)];
+
+    const subagentTranscripts = new Map<string, Round[]>();
+    subagentTranscripts.set('subagent-session-1', subRounds);
+
+    const result = computeFishboneLayout(
+      rounds,
+      new Set(),
+      subagentTranscripts,
+      new Set(['subagent-session-1']),
+    );
+
+    // Main round at depth 0
+    const mainNode = result.nodes.find((n) => n.id === 'round-0')!;
+    expect((mainNode.data as Record<string, unknown>).nestingDepth).toBe(0);
+
+    // Sub-graph round at depth 1
+    const subNode = result.nodes.find((n) => n.id.startsWith('round-0-fork-0-sub-'))!;
+    expect((subNode.data as Record<string, unknown>).nestingDepth).toBe(1);
+  });
+
+  it('fork node position is below expanded tool call bones', () => {
+    const rounds = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-1'],
+        toolCalls: [
+          { id: 'tc-0', name: 'exec', toolUseBlock: { type: 'tool_use', name: 'exec', id: 'tc-0' } },
+          { id: 'tc-1', name: 'read', toolUseBlock: { type: 'tool_use', name: 'read', id: 'tc-1' } },
+        ],
+      }),
+    ];
+
+    // Expand the round's tool calls
+    const expanded = new Set(['round-0']);
+    const result = computeFishboneLayout(rounds, expanded);
+
+    const bone1 = result.nodes.find((n) => n.id === 'round-0-bone-1')!;
+    const forkNode = result.nodes.find((n) => n.id === 'round-0-fork-0')!;
+
+    // Fork should be below the last bone
+    expect(forkNode.position.y).toBeGreaterThan(bone1.position.y);
+  });
+
+  it('does not render sub-graph when fork is collapsed', () => {
+    const rounds = [makeSubagentRound(0)];
+    const subRounds = [makeRound(0), makeRound(1)];
+
+    const subagentTranscripts = new Map<string, Round[]>();
+    subagentTranscripts.set('subagent-session-1', subRounds);
+
+    // expandedSubagents is empty → fork is collapsed
+    const result = computeFishboneLayout(
+      rounds,
+      new Set(),
+      subagentTranscripts,
+      new Set(),
+    );
+
+    // Only 1 round + 1 fork, no sub-graph nodes
+    expect(result.nodes).toHaveLength(2);
+  });
+
+  it('handles nested sub-agents (sub-agent within sub-agent)', () => {
+    // Main session has a round that spawns sub-agent A
+    const mainRounds = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-a'],
+        toolCalls: [],
+      }),
+    ];
+
+    // Sub-agent A has a round that spawns sub-agent B
+    const subARounds: Round[] = [
+      makeRound(0, {
+        type: 'subagent',
+        subagentSpawns: ['sub-b'],
+        toolCalls: [],
+      }),
+    ];
+
+    // Sub-agent B has simple rounds
+    const subBRounds: Round[] = [
+      makeRound(0, { totalTokens: 50 }),
+    ];
+
+    const transcripts = new Map<string, Round[]>();
+    transcripts.set('sub-a', subARounds);
+    transcripts.set('sub-b', subBRounds);
+
+    const expandedSubs = new Set(['sub-a', 'sub-b']);
+
+    const result = computeFishboneLayout(
+      mainRounds,
+      new Set(),
+      transcripts,
+      expandedSubs,
+    );
+
+    // Main: 1 round + 1 fork(sub-a) = 2
+    // sub-a: 1 round + 1 fork(sub-b) = 2
+    // sub-b: 1 round = 1
+    // Total = 5
+    expect(result.nodes).toHaveLength(5);
+
+    // Find deepest node (sub-b's round)
+    const deepNodes = result.nodes.filter(
+      (n) => (n.data as Record<string, unknown>).nestingDepth === 2
+    );
+    expect(deepNodes).toHaveLength(1);
+  });
+
+  it('fork node uses subagentEdge type for edges', () => {
+    const rounds = [makeSubagentRound(0)];
+    const result = computeFishboneLayout(rounds);
+
+    const subEdges = result.edges.filter((e) => e.type === 'subagentEdge');
+    expect(subEdges.length).toBeGreaterThan(0);
   });
 });

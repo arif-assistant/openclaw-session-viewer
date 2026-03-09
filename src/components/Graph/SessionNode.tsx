@@ -3,11 +3,12 @@
 // Renders either:
 //   A) A round node  – shows round summary, tool-call badge, toggle button
 //   B) A bone node   – small tool-call indicator when a round is expanded
+//   C) A sub-agent fork node – purple fork showing sub-agent session key
 //
 // Visual encoding:
 //   - Size ∝ token count
 //   - Colour encodes round type (blue=normal, orange=tool_call, purple=subagent)
-//   - Handles: left (target) + right (source) + bottom (source, for bones)
+//   - Handles: left (target) + right (source) + bottom (source, for bones/forks)
 
 import { memo, useCallback } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
@@ -50,10 +51,77 @@ function BoneNode({ data, selected }: { data: SessionNodeData; selected: boolean
   );
 }
 
+// ── Sub-agent fork node ──────────────────────────────────────────────
+
+function SubagentForkNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
+  const toggleSubagent = useTranscriptStore((s) => s.toggleSubagent);
+  const loadingSubagents = useTranscriptStore((s) => s.loadingSubagents);
+
+  const isLoading = loadingSubagents.has(data.subagentSessionKey);
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      toggleSubagent(data.parentRoundId, data.subagentSessionKey);
+    },
+    [toggleSubagent, data.parentRoundId, data.subagentSessionKey]
+  );
+
+  return (
+    <div
+      onClick={handleClick}
+      style={{
+        width: data.nodeWidth,
+        height: data.nodeHeight,
+        borderColor: data.color,
+        borderStyle: 'dashed',
+      }}
+      className={`
+        relative rounded-lg border-2 bg-surface-secondary px-2 py-1
+        flex items-center gap-1.5 overflow-hidden
+        cursor-pointer transition-all
+        ${selected ? 'shadow-lg ring-2 ring-purple-400' : 'hover:shadow-md hover:bg-purple-900/10'}
+      `}
+      title={`Sub-agent: ${data.subagentSessionKey}\nClick to ${data.subagentExpanded ? 'collapse' : 'expand'}`}
+    >
+      <span className="text-[10px]">
+        {isLoading ? '⏳' : data.subagentExpanded ? '▼' : '▶'}
+      </span>
+      <span
+        className="text-[11px] truncate font-mono"
+        style={{ color: data.color }}
+      >
+        {data.preview}
+      </span>
+
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!w-2 !h-2 !border-purple-500"
+        style={{ background: data.color }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!w-2 !h-2 !border-purple-500"
+        style={{ background: data.color }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className="!w-2 !h-2 !border-purple-500"
+        style={{ background: data.color }}
+      />
+    </div>
+  );
+}
+
 // ── Round node (main spine node) ─────────────────────────────────────
 
 function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolean }) {
   const toggleRound = useTranscriptStore((s) => s.toggleRound);
+  const toggleSubagent = useTranscriptStore((s) => s.toggleSubagent);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -61,6 +129,14 @@ function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolea
       toggleRound(data.entryId);
     },
     [toggleRound, data.entryId]
+  );
+
+  const handleSubagentToggle = useCallback(
+    (e: React.MouseEvent, sessionKey: string) => {
+      e.stopPropagation();
+      toggleSubagent(data.entryId, sessionKey);
+    },
+    [toggleSubagent, data.entryId]
   );
 
   const { nodeWidth, nodeHeight, color, preview, totalTokens, toolCallCount, expanded, hasSubagent } = data;
@@ -148,7 +224,7 @@ function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolea
         position={Position.Right}
         className="!w-2 !h-2 !bg-gray-500 !border-gray-600"
       />
-      {/* Bottom handle for bone connections */}
+      {/* Bottom handle for bone/fork connections */}
       <Handle
         type="source"
         position={Position.Bottom}
@@ -163,6 +239,10 @@ function RoundNode({ data, selected }: { data: SessionNodeData; selected: boolea
 
 function SessionNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as unknown as SessionNodeData;
+
+  if (nodeData.isSubagentFork) {
+    return <SubagentForkNode data={nodeData} selected={!!selected} />;
+  }
 
   if (nodeData.isBone) {
     return <BoneNode data={nodeData} selected={!!selected} />;

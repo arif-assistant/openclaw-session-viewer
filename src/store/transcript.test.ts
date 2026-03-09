@@ -1,7 +1,7 @@
 // ── Round grouping tests ─────────────────────────────────────────────
 
-import { describe, it, expect } from 'vitest';
-import { groupIntoRounds } from './transcript';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { groupIntoRounds, useTranscriptStore } from './transcript';
 import type { TranscriptEntry } from '@/gateway/types';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -173,5 +173,70 @@ describe('groupIntoRounds', () => {
     expect(rounds).toHaveLength(1);
     // Post-processing should set assistantMessage to the last assistant entry
     expect(rounds[0].assistantMessage?.id).toBe('2');
+  });
+});
+
+// ── Transcript store sub-agent state tests ───────────────────────────
+
+describe('useTranscriptStore — sub-agent state', () => {
+  beforeEach(() => {
+    useTranscriptStore.getState().clear();
+  });
+
+  it('initializes with empty sub-agent state', () => {
+    const store = useTranscriptStore.getState();
+
+    expect(store.subagentTranscripts).toBeInstanceOf(Map);
+    expect(store.subagentTranscripts.size).toBe(0);
+    expect(store.expandedSubagents).toBeInstanceOf(Set);
+    expect(store.expandedSubagents.size).toBe(0);
+    expect(store.loadingSubagents).toBeInstanceOf(Set);
+    expect(store.loadingSubagents.size).toBe(0);
+  });
+
+  it('toggleSubagent adds/removes from expandedSubagents', () => {
+    const store = useTranscriptStore.getState();
+
+    // First toggle → expand
+    store.toggleSubagent('round-0', 'sub-session-1');
+    expect(useTranscriptStore.getState().expandedSubagents.has('sub-session-1')).toBe(true);
+
+    // Second toggle → collapse
+    useTranscriptStore.getState().toggleSubagent('round-0', 'sub-session-1');
+    expect(useTranscriptStore.getState().expandedSubagents.has('sub-session-1')).toBe(false);
+  });
+
+  it('clear resets sub-agent state', () => {
+    const store = useTranscriptStore.getState();
+
+    // Set up some sub-agent state
+    store.toggleSubagent('round-0', 'sub-1');
+    expect(useTranscriptStore.getState().expandedSubagents.size).toBe(1);
+
+    // Clear
+    useTranscriptStore.getState().clear();
+    const cleared = useTranscriptStore.getState();
+    expect(cleared.subagentTranscripts.size).toBe(0);
+    expect(cleared.expandedSubagents.size).toBe(0);
+    expect(cleared.loadingSubagents.size).toBe(0);
+  });
+
+  it('toggleSubagent reuses cached transcript', () => {
+    // Pre-populate the cache
+    const entries = [
+      msg('1', 'user', 'Hello'),
+      msg('2', 'assistant', 'Hi!'),
+    ];
+    const rounds = groupIntoRounds(entries);
+    const nextTranscripts = new Map(useTranscriptStore.getState().subagentTranscripts);
+    nextTranscripts.set('cached-sub', { entries, rounds });
+    useTranscriptStore.setState({ subagentTranscripts: nextTranscripts });
+
+    // Toggle expand — should not attempt to load (already cached)
+    useTranscriptStore.getState().toggleSubagent('round-0', 'cached-sub');
+    const state = useTranscriptStore.getState();
+    expect(state.expandedSubagents.has('cached-sub')).toBe(true);
+    // Loading should not have been triggered (no client connected)
+    expect(state.loadingSubagents.has('cached-sub')).toBe(false);
   });
 });

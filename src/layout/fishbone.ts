@@ -7,6 +7,8 @@
 //   - Main spine: one node per round, horizontal left-to-right at Y=0
 //   - Tool call "bones": when a round is expanded, its tool calls appear
 //     as small nodes below the round node (vertical fishbone ribs)
+//   - Sub-agent forks: when a round has expanded sub-agents, fork nodes
+//     and sub-agent fishbone sub-graphs are rendered below
 //   - Node colour encodes round type (normal / tool_call / subagent)
 //   - Node size ∝ token count
 
@@ -20,6 +22,22 @@ import { ROUND_COLORS } from './types';
 const X_SPACING = 220;       // px between round nodes horizontally
 const Y_BONE_SPACING = 80;   // px between tool-call bone nodes vertically
 const X_OFFSET = 60;         // left margin
+const Y_SUBAGENT_FORK = 60;  // px from round node to sub-agent fork node
+const Y_SUBAGENT_GRAPH = 50; // px from fork node to sub-agent sub-graph
+const SUBAGENT_X_SPACING = 180; // slightly tighter spacing for sub-graphs
+const SUBAGENT_SCALE = 0.85;    // sub-graph nodes are slightly smaller
+
+// Purple shades per nesting depth (lighter = deeper)
+const SUBAGENT_COLORS = [
+  '#a855f7', // depth 0 (direct sub-agents)
+  '#c084fc', // depth 1
+  '#d8b4fe', // depth 2
+  '#e9d5ff', // depth 3+
+];
+
+function subagentColor(depth: number): string {
+  return SUBAGENT_COLORS[Math.min(depth, SUBAGENT_COLORS.length - 1)];
+}
 
 // ── Types for React Flow data ────────────────────────────────────────
 
@@ -55,6 +73,18 @@ export interface SessionNodeData {
   isBone: boolean;
   /** Tool name (e.g. "exec", "read"). */
   toolName: string;
+
+  // Sub-agent fork fields
+  /** Identifies this node as a sub-agent fork node. */
+  isSubagentFork: boolean;
+  /** Sub-agent session key (for fork nodes). */
+  subagentSessionKey: string;
+  /** Whether the sub-agent fork is expanded (showing sub-graph). */
+  subagentExpanded: boolean;
+  /** Nesting depth for sub-agent rendering (0 = top level). */
+  nestingDepth: number;
+  /** The parent round id this fork belongs to. */
+  parentRoundId: string;
 
   // Legacy compatibility fields
   type: string;
@@ -113,6 +143,18 @@ function buildRoundPreview(round: Round, index: number): string {
   return `Round ${index + 1}${detail}`;
 }
 
+/** Shorten a session key for display. */
+function shortSessionLabel(sessionKey: string): string {
+  // If it looks like "agent:main:subagent:uuid", show last part
+  const parts = sessionKey.split(':');
+  if (parts.length > 2) {
+    const last = parts[parts.length - 1];
+    // Truncate UUID
+    return last.length > 12 ? `${last.slice(0, 8)}…` : last;
+  }
+  return sessionKey.length > 20 ? `${sessionKey.slice(0, 18)}…` : sessionKey;
+}
+
 // ── Layout computation ───────────────────────────────────────────────
 
 export interface FishboneResult {
@@ -125,11 +167,23 @@ export interface FishboneResult {
  *
  * @param rounds - Grouped rounds from transcript
  * @param expandedRounds - Set of round ids that are currently expanded
+ * @param subagentTranscripts - Map of session key → rounds for expanded sub-agents
+ * @param expandedSubagents - Set of expanded sub-agent session keys
+ * @param nestingDepth - Current nesting depth (0 = main, 1+ = sub-agent)
+ * @param idPrefix - Prefix for node/edge ids (for uniqueness in nested graphs)
+ * @param originX - X offset for the sub-graph
+ * @param originY - Y offset for the sub-graph
  * @returns React Flow nodes and edges positioned in a fishbone pattern
  */
 export function computeFishboneLayout(
   rounds: Round[],
-  expandedRounds: Set<string> = new Set()
+  expandedRounds: Set<string> = new Set(),
+  subagentTranscripts: Map<string, Round[]> = new Map(),
+  expandedSubagents: Set<string> = new Set(),
+  nestingDepth: number = 0,
+  idPrefix: string = '',
+  originX: number = 0,
+  originY: number = 0,
 ): FishboneResult {
   if (rounds.length === 0) {
     return { nodes: [], edges: [] };
@@ -138,22 +192,33 @@ export function computeFishboneLayout(
   const nodes: Node<SessionNodeData>[] = [];
   const edges: Edge[] = [];
 
-  // ── Lay out main spine (Y = 0) ──
+  const scale = Math.pow(SUBAGENT_SCALE, nestingDepth);
+  const xSpacing = nestingDepth === 0 ? X_SPACING : SUBAGENT_X_SPACING * scale;
+
+  // ── Lay out main spine (Y = originY) ──
   for (let i = 0; i < rounds.length; i++) {
     const round = rounds[i];
-    const { width, height } = computeNodeSize(round.totalTokens);
-    const x = X_OFFSET + i * X_SPACING;
-    const y = 0;
+    const rawSize = computeNodeSize(round.totalTokens);
+    const width = rawSize.width * scale;
+    const height = rawSize.height * scale;
+    const x = originX + X_OFFSET * scale + i * xSpacing;
+    const y = originY;
     const isExpanded = expandedRounds.has(round.id);
     const preview = buildRoundPreview(round, i);
+    const nodeId = `${idPrefix}${round.id}`;
+
+    // Determine color: sub-agent sub-graph nodes use lighter purple
+    const nodeColor = nestingDepth > 0
+      ? subagentColor(nestingDepth - 1)
+      : ROUND_COLORS[round.type];
 
     nodes.push({
-      id: round.id,
+      id: nodeId,
       type: 'sessionNode',
       position: { x, y },
       data: {
         entryId: round.id,
-        color: ROUND_COLORS[round.type],
+        color: nodeColor,
         nodeWidth: width,
         nodeHeight: height,
         timestamp: round.timestamp,
@@ -171,6 +236,12 @@ export function computeFishboneLayout(
         isBone: false,
         toolName: '',
 
+        isSubagentFork: false,
+        subagentSessionKey: '',
+        subagentExpanded: false,
+        nestingDepth,
+        parentRoundId: '',
+
         type: 'round',
         category: round.type === 'normal' ? 'conversation' : round.type,
         role: 'round',
@@ -179,30 +250,34 @@ export function computeFishboneLayout(
 
     // Edge to previous round
     if (i > 0) {
+      const prevNodeId = `${idPrefix}${rounds[i - 1].id}`;
       edges.push({
-        id: `e-${rounds[i - 1].id}-${round.id}`,
-        source: rounds[i - 1].id,
-        target: round.id,
+        id: `e-${prevNodeId}-${nodeId}`,
+        source: prevNodeId,
+        target: nodeId,
         type: 'branchEdge',
       });
     }
+
+    // Track the bottom of bone nodes for sub-agent fork positioning
+    let boneBottomY = y + height + 20;
 
     // ── Tool call bones (if expanded) ──
     if (isExpanded && round.toolCalls.length > 0) {
       for (let j = 0; j < round.toolCalls.length; j++) {
         const tc = round.toolCalls[j];
-        const boneId = `${round.id}-bone-${j}`;
-        const boneY = y + height + 20 + j * Y_BONE_SPACING;
+        const boneId = `${nodeId}-bone-${j}`;
+        const boneY = y + height + 20 + j * Y_BONE_SPACING * scale;
 
         nodes.push({
           id: boneId,
           type: 'sessionNode',
-          position: { x: x + 20, y: boneY },
+          position: { x: x + 20 * scale, y: boneY },
           data: {
             entryId: boneId,
             color: '#f97316',
-            nodeWidth: 120,
-            nodeHeight: 36,
+            nodeWidth: 120 * scale,
+            nodeHeight: 36 * scale,
             timestamp: undefined,
             totalTokens: 0,
 
@@ -218,6 +293,12 @@ export function computeFishboneLayout(
             isBone: true,
             toolName: tc.name,
 
+            isSubagentFork: false,
+            subagentSessionKey: '',
+            subagentExpanded: false,
+            nestingDepth,
+            parentRoundId: round.id,
+
             type: 'tool_call',
             category: 'tool_call',
             role: 'tool',
@@ -225,13 +306,103 @@ export function computeFishboneLayout(
         });
 
         // Edge from round node (or previous bone) to this bone
-        const sourceId = j === 0 ? round.id : `${round.id}-bone-${j - 1}`;
+        const sourceId = j === 0 ? nodeId : `${nodeId}-bone-${j - 1}`;
         edges.push({
           id: `e-${sourceId}-${boneId}`,
           source: sourceId,
           target: boneId,
           type: 'branchEdge',
         });
+
+        boneBottomY = boneY + 36 * scale + 10;
+      }
+    }
+
+    // ── Sub-agent fork nodes ──
+    if (round.subagentSpawns.length > 0) {
+      for (let s = 0; s < round.subagentSpawns.length; s++) {
+        const subKey = round.subagentSpawns[s];
+        const isSubExpanded = expandedSubagents.has(subKey);
+        const forkId = `${nodeId}-fork-${s}`;
+        const forkY = boneBottomY + s * (Y_SUBAGENT_FORK + 10) * scale;
+
+        nodes.push({
+          id: forkId,
+          type: 'sessionNode',
+          position: { x: x + 10 * scale, y: forkY },
+          data: {
+            entryId: forkId,
+            color: subagentColor(nestingDepth),
+            nodeWidth: 150 * scale,
+            nodeHeight: 40 * scale,
+            timestamp: undefined,
+            totalTokens: 0,
+
+            isRound: false,
+            roundType: 'subagent',
+            preview: `🧬 ${shortSessionLabel(subKey)}`,
+            toolCallCount: 0,
+            expanded: false,
+            hasSubagent: false,
+            userPreview: '',
+            assistantPreview: '',
+
+            isBone: false,
+            toolName: '',
+
+            isSubagentFork: true,
+            subagentSessionKey: subKey,
+            subagentExpanded: isSubExpanded,
+            nestingDepth,
+            parentRoundId: round.id,
+
+            type: 'subagent_fork',
+            category: 'subagent',
+            role: 'subagent',
+          },
+        });
+
+        // Edge from round node to fork
+        edges.push({
+          id: `e-${nodeId}-${forkId}`,
+          source: nodeId,
+          target: forkId,
+          type: 'subagentEdge',
+        });
+
+        // ── Render sub-agent sub-graph if expanded ──
+        if (isSubExpanded) {
+          const subRounds = subagentTranscripts.get(subKey);
+          if (subRounds && subRounds.length > 0) {
+            const subGraphOriginX = x;
+            const subGraphOriginY = forkY + 40 * scale + Y_SUBAGENT_GRAPH * scale;
+            const subPrefix = `${forkId}-sub-`;
+
+            const subResult = computeFishboneLayout(
+              subRounds,
+              expandedRounds,
+              subagentTranscripts,
+              expandedSubagents,
+              nestingDepth + 1,
+              subPrefix,
+              subGraphOriginX,
+              subGraphOriginY,
+            );
+
+            nodes.push(...subResult.nodes);
+            edges.push(...subResult.edges);
+
+            // Edge from fork node to first sub-graph round
+            if (subResult.nodes.length > 0) {
+              edges.push({
+                id: `e-${forkId}-${subResult.nodes[0].id}`,
+                source: forkId,
+                target: subResult.nodes[0].id,
+                type: 'subagentEdge',
+              });
+            }
+          }
+        }
       }
     }
   }

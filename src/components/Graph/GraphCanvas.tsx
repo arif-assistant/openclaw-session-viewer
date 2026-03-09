@@ -26,6 +26,7 @@ import '@xyflow/react/dist/style.css';
 
 import { SessionNode } from './SessionNode';
 import { BranchEdge } from './BranchEdge';
+import { SubagentEdge } from './SubagentEdge';
 
 // ── Custom types registration ────────────────────────────────────────
 
@@ -35,6 +36,7 @@ const nodeTypes = {
 
 const edgeTypes = {
   branchEdge: BranchEdge,
+  subagentEdge: SubagentEdge,
 };
 
 // ── Props ────────────────────────────────────────────────────────────
